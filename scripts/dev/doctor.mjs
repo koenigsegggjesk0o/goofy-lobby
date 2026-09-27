@@ -13,6 +13,7 @@ import { resolve } from 'node:path';
 
 const ROOT = resolve(import.meta.dirname, '../..');
 const ENV_PATH = resolve(ROOT, '.env');
+const EXAMPLE_PATH = resolve(ROOT, '.env.example');
 
 const RED = '\x1b[31m';
 const GREEN = '\x1b[32m';
@@ -46,7 +47,7 @@ const groups = [
   },
   {
     label: 'server-side (runner migrasi, admin API)',
-    required: ['SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_ACCESS_TOKEN'],
+    required: ['SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_ACCESS_TOKEN', 'SUPABASE_PROJECT_REF'],
     critical: false,
   },
   {
@@ -89,6 +90,36 @@ for (const group of groups) {
   }
 }
 if (!existsSync(ENV_PATH)) blockers.push('.env tidak ada sama sekali');
+
+// --- 1b. Sinkron .env.example (template drift guard, Task 10-c) ---
+// Semua var yang doctor kenal harus punya SLOT di .env.example (boleh
+// berkomentar utk yang opsional) — user yang mengisi ulang .env pasca-
+// insiden tidak boleh kehilangan slot variabel. Melahirkan dari insiden
+// nyata: template sempat tertinggal 3 var TEST_USER_*_ID yang diwajibkan
+// qa-env.ts. Drift = peringatan (bukan blocker lingkungan).
+console.log('\n== .env.example sinkron (template drift guard) ==');
+const templateVars = new Set();
+if (existsSync(EXAMPLE_PATH)) {
+  for (const rawLine of readFileSync(EXAMPLE_PATH, 'utf8').split('\n')) {
+    const stripped = rawLine.trim().replace(/^#\s*/, '');
+    const match = /^([A-Z][A-Z0-9_]*)=/.exec(stripped);
+    if (match) templateVars.add(match[1]);
+  }
+}
+const allKnownVars = groups.flatMap((group) => group.required);
+const templateMissing = allKnownVars.filter((name) => !templateVars.has(name));
+if (!existsSync(EXAMPLE_PATH)) {
+  console.log(`  ${YELLOW}✗${RESET} .env.example tidak ada — template hilang`);
+} else if (templateMissing.length === 0) {
+  console.log(
+    `  ${GREEN}✓${RESET} semua ${allKnownVars.length} var yang dibutuhkan kode punya slot di template`,
+  );
+} else {
+  console.log(
+    `  ${YELLOW}✗${RESET} template kurang ${templateMissing.length} slot var (dokumen usang):`,
+  );
+  for (const name of templateMissing) console.log(`      - ${name}`);
+}
 
 const clientEnvReady = env.has('VITE_SUPABASE_URL') && env.has('VITE_SUPABASE_ANON_KEY');
 const hasSentryDsn = env.has('VITE_SENTRY_DSN');
