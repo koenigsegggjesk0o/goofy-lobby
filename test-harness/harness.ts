@@ -7,8 +7,9 @@
  * (syarat page.evaluate) dengan bidang `ok` + detail kegagalan.
  *
  * Kelompok kemampuan:
- *  - env/auth    : envStatus, signUp (probe penolakan captcha), signIn,
- *                  signOut, getSession, probeListProfiles
+ *  - env/auth    : envStatus (termasuk status TURN), signUp (probe
+ *                  penolakan captcha), signIn, signOut, getSession,
+ *                  probeListProfiles
  *  - profil      : getProfile, updateProfile, probeReadProfile,
  *                  probeWriteProfile (matriks RLS ringan)
  *  - snippet     : recordMockSnippet (stream sintetis → MediaRecorder asli),
@@ -43,9 +44,11 @@ import { SpatialAudioEngine } from '../src/audio';
 import { captureError, flushMonitoring, initMonitoring, monitoringStatus } from '../src/monitoring';
 import {
   MeshRoomController,
+  readTurnEnvFromVite,
   type PeerState,
   type SessionInfo,
   type SupabaseRealtimeLike,
+  type TurnEnvStatus,
 } from '../src/webrtc';
 
 // ============================================================
@@ -221,6 +224,7 @@ export interface HarnessApi {
     missing: string[];
     hasTurnstileKey: boolean;
     hasSentryDsn: boolean;
+    turn: { status: TurnEnvStatus; reasons: string[] };
   };
   signUp(email: string, password: string, captchaToken?: string): Promise<AuthProbeResult>;
   signIn(email: string, password: string, captchaToken?: string): Promise<AuthProbeResult>;
@@ -511,7 +515,14 @@ class Harness implements HarnessApi {
     missing: string[];
     hasTurnstileKey: boolean;
     hasSentryDsn: boolean;
+    turn: { status: TurnEnvStatus; reasons: string[] };
   } {
+    // readTurnEnvFromVite murni dan tidak pernah melempar — aman di luar try.
+    const parsed = readTurnEnvFromVite();
+    const turn =
+      parsed.status === 'invalid'
+        ? { status: parsed.status, reasons: parsed.reasons }
+        : { status: parsed.status, reasons: [] as string[] };
     try {
       const env = readClientEnv();
       return {
@@ -519,11 +530,12 @@ class Harness implements HarnessApi {
         missing: [],
         hasTurnstileKey: env.turnstileSiteKey !== undefined,
         hasSentryDsn: env.sentryDsn !== undefined,
+        turn,
       };
     } catch (error) {
       const missing =
         error instanceof Error && 'missing' in error ? (error.missing as string[]) : [];
-      return { ready: false, missing, hasTurnstileKey: false, hasSentryDsn: false };
+      return { ready: false, missing, hasTurnstileKey: false, hasSentryDsn: false, turn };
     }
   }
 

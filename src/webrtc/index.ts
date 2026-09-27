@@ -13,6 +13,15 @@ export {
 export { SignalingClient, type SignalingClientOptions } from './signaling-client';
 export { MeshRoomController, type MeshRoomControllerOptions } from './mesh-room-controller';
 export {
+  TURN_USERNAME_MAX_LENGTH,
+  parseTurnEnv,
+  readTurnEnvFromVite,
+  resolveIceServers,
+  type ResolvedIceServers,
+  type TurnEnvResult,
+  type TurnEnvStatus,
+} from './turn-config';
+export {
   AvatarColorSchema,
   DATA_CHANNEL_LABEL,
   MAX_REMOTE_PEERS,
