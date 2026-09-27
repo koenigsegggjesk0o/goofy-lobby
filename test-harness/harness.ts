@@ -41,7 +41,14 @@ import {
   type VoiceRecordingResult,
 } from '../src/profile';
 import { SpatialAudioEngine } from '../src/audio';
-import { captureError, flushMonitoring, initMonitoring, monitoringStatus } from '../src/monitoring';
+import {
+  addTrail,
+  captureError,
+  flushMonitoring,
+  initMonitoring,
+  meshTrail,
+  monitoringStatus,
+} from '../src/monitoring';
 import {
   MeshRoomController,
   readTurnEnvFromVite,
@@ -468,6 +475,11 @@ class Harness implements HarnessApi {
       this.#meshLog.splice(0, this.#meshLog.length - MESH_LOG_LIMIT);
     }
     this.logLine(`mesh ${event}: ${JSON.stringify(detail)}`);
+    // Task 8-g: event mesh juga jadi breadcrumb monitoring (addTrail no-op
+    // aman bila belum init / DSN kosong) — error di dashboard membawa jejak
+    // siklus mesh terakhir, bukan stack trace kosong.
+    const trail = meshTrail(event, detail);
+    addTrail(trail.message, trail.data, trail.category, trail.level);
   }
 
   /**
@@ -1028,6 +1040,9 @@ class Harness implements HarnessApi {
       } else if (turnStatus === 'enabled') {
         this.logLine('joinMesh: TURN aktif — STUN default + entri TURN relay');
       }
+      // Breadcrumb siklus hidup (8-g): attempt tercatat walau join nanti
+      // gagal di auth — jejak "mencoba join" tetap muncul di dashboard.
+      addTrail('mesh join attempt', { roomCode, turnStatus }, 'mesh');
       const userId = await this.#requireUserId();
       const profile = await this.#services().profiles.getProfile(userId);
       const sessionId = `harness-${crypto.randomUUID().slice(0, 8)}`;
@@ -1079,6 +1094,7 @@ class Harness implements HarnessApi {
       await controller.join();
       this.#mesh = { controller, roomCode, sessionId, self };
       this.logLine(`joinMesh('${roomCode}'): sessionId=${sessionId}`);
+      addTrail('mesh join ok', { roomCode, sessionId }, 'mesh');
       return { ok: true, sessionId, roomCode, message: 'join room ok' };
     } catch (error) {
       this.#mockMeshStreamCleanup?.();
@@ -1092,11 +1108,13 @@ class Harness implements HarnessApi {
       if (this.#mesh === null) {
         return { ok: true, message: 'memang tidak sedang join' };
       }
+      addTrail('mesh leave attempt', { roomCode: this.#mesh.roomCode }, 'mesh');
       await this.#mesh.controller.leave();
       this.#mockMeshStreamCleanup?.();
       this.#mockMeshStreamCleanup = null;
       this.#mesh = null;
       this.logLine('leaveMesh ok');
+      addTrail('mesh leave ok', undefined, 'mesh');
       return { ok: true, message: 'leave room ok' };
     } catch (error) {
       return { ok: false, ...describeError(error) };

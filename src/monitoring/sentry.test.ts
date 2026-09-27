@@ -172,6 +172,15 @@ describe('addTrail', () => {
     ]);
   });
 
+  it('parameter level (8-g) diteruskan — default tetap info (kompatibilitas)', () => {
+    addTrail('mesh error', { event: 'error' }, 'mesh', 'error');
+    addTrail('biasa');
+    expect(fake.breadcrumbs).toEqual([
+      { message: 'mesh error', category: 'mesh', level: 'error', data: { event: 'error' } },
+      { message: 'biasa', category: 'app', level: 'info' },
+    ]);
+  });
+
   it('SDK meledak → diam (tidak pernah melempar)', () => {
     fake.failOn = 'breadcrumb';
     expect(() => addTrail('aman')).not.toThrow();

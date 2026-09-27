@@ -142,14 +142,20 @@ export function captureError(error: unknown, detail: CaptureDetail = {}): string
 
 /**
  * Menambahkan jejak ringan (breadcrumb) untuk konteks error di dashboard.
- * No-op aman bila SDK belum init.
+ * No-op aman bila SDK belum init. Level default 'info' (mis. event mesh
+ * 'error' dikirim 'error' — lihat mesh-trail.ts).
  */
-export function addTrail(message: string, data?: Record<string, unknown>, category = 'app'): void {
+export function addTrail(
+  message: string,
+  data?: Record<string, unknown>,
+  category = 'app',
+  level: 'info' | 'error' = 'info',
+): void {
   try {
     activeSdk.addBreadcrumb({
       message,
       category,
-      level: 'info',
+      level,
       ...(data === undefined ? {} : { data }),
     });
   } catch {

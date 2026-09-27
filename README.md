@@ -127,6 +127,14 @@ apikey`) dengan `[difilter]` — kredensial tidak pernah sampai dashboard.
   menempel konteks lewat `withScope` — tidak bocor ke event lain.
 - **Never-throw**: semua helper membungkus SDK dalam try/catch —
   kegagalan monitoring tidak boleh menjatuhkan aplikasi.
+- **Breadcrumb mesh (Task 8-g)**: `mesh-trail.ts` memetakan event siklus
+  mesh (join/leave/peer-*/error) ke breadcrumb dengan batas ukurannya
+  (pesan 64 / nilai 256 karakter, maks 8 kunci detail — berlebih dihitung
+  di `detailKeysDropped`; objek sirkular tidak pernah melempar).
+  `addTrail` menerima `level` opsional — event mesh `'error'` dikirim
+  sebagai level `error`, sisanya `info`. Harness memanggilnya di setiap
+  `#pushMeshLog` + join/leave attempt, jadi error mesh di dashboard
+  membawa jejak konteks terakhir, bukan stack trace kosong.
 
 ## Supabase keepalive (anti auto-pause)
 
