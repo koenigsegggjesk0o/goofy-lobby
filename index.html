@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>goofy-lobby — Fase 1 (tanpa UI)</title>
+    <title>goofy-lobby — Fase 1 selesai (tanpa UI)</title>
   </head>
   <body>
     <!--
@@ -15,8 +15,9 @@
       juga bukan UI produk.
     -->
     <p>
-      goofy-lobby — Fase 1: lapisan sistem saja (WebRTC, spatial audio, Supabase), belum ada UI.
-      Test harness (alat uji otomatis) tersedia di /test-harness/.
+      goofy-lobby — Fase 1 SELESAI: lapisan sistem (WebRTC, spatial audio, Supabase) + TURN Fase 2,
+      tanpa UI (menunggu Fase 3). Audit DoD: docs/dod-audit-fase1.md. Test harness (alat uji
+      otomatis) tersedia di /test-harness/.
     </p>
     <!-- Status modul sistem (F1.3 + F1.4 + F1.5) — murni teks info, bukan UI produk. -->
     <p>Modul sistem yang sudah ada (F1.3, tanpa UI):</p>
@@ -27,6 +28,7 @@
       <li>webrtc/data-channel-sync — posisi ~15x/detik, tervalidasi</li>
       <li>webrtc/ice-restart-handler — pemulihan koneksi + backoff</li>
       <li>webrtc/mesh-room-controller — orkestrator room (presence, lifecycle)</li>
+      <li>webrtc/turn-config — konfigurasi TURN fallback (Fase 2): env VITE_TURN_* → iceServers</li>
     </ul>
     <p>Modul audio spasial (F1.4, tanpa UI):</p>
     <ul>

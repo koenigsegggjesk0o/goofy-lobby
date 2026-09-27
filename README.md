@@ -3,7 +3,8 @@
 MVP web app sosial berbasis **voice chat dengan spatial audio real-time**
 (WebRTC mesh P2P, maks. 8 orang per room, lobby 2D dengan posisi avatar).
 
-> **Status: Fase 1 — Sistem inti (TANPA UI).**
+> **Status: Fase 1 SELESAI (sistem inti, TANPA UI) + modul TURN Fase 2.**
+> Audit DoD Fase 1 lengkap (bukti per item): lihat [`docs/dod-audit-fase1.md`](docs/dod-audit-fase1.md).
 > Sesuai keputusan pemilik produk: tidak ada satu baris kode UI pun sampai
 > Fase 3. Satu-satunya halaman di dev server adalah halaman status `/`
 > (infrastruktur) dan test harness `/test-harness/` (alat uji polos untuk
@@ -145,7 +146,7 @@ Setup (sekali, oleh pemilik repo):
    dipicu manual dari tab **Actions → Supabase keepalive → Run workflow**.
    Endpoint kueri diverifikasi live (HTTP 200/201, hasil `[{"?column?":1}]`).
 
-## Struktur (Fase 1 — sistem inti; status per modul)
+## Struktur (Fase 1 — sistem inti; status per modul + TURN Fase 2)
 
 ```
 src/
@@ -163,6 +164,9 @@ src/
                  mesh-room-controller (presence → penemuan peer,
                    kapasitas 8 deterministik, lifecycle join/leave,
                    antrean sinyal utk race presence vs broadcast — F1.6)
+                 turn-config (✅ Fase 2: env VITE_TURN_* → iceServers;
+                   union disabled/enabled/invalid, alasan terkumpul;
+                   fallback STUN-only bila kosong/invalid)
   audio/         ✅ F1.4:
                  types (konvensi dunia 2D → bidang x-z audio, yaw →
                    vektor orientasi, helper posisi modern/legacy,
@@ -219,6 +223,24 @@ supabase/
                  supabase-keepalive.yml (cron tiap 3 hari: `select 1`
                    lewat Management API — anti auto-pause free tier)
 ```
+
+### Catatan desain TURN fallback (Fase 2, Task 8-b)
+
+- Env `VITE_TURN_URL` / `VITE_TURN_USERNAME` / `VITE_TURN_CREDENTIAL`
+  (opsional). Prefix `VITE_` diperlukan karena `RTCPeerConnection`
+  berjalan di browser — kredensial TURN statis memang sampai ke bundle
+  klien (praktik standar WebRTC untuk kredensial statis; dapat di-revoke
+  kapan saja dari dashboard Metered). Kredensial ephemeral via backend
+  tercatat sebagai opsi masa depan.
+- `parseTurnEnv` murni: hasil union `disabled | enabled | invalid` dengan
+  seluruh alasan terkumpul (bukan hanya yang pertama). URL boleh banyak
+  (dipisah koma), skema wajib `turn:`/`turns:`.
+- Kosong/invalid → fallback STUN-only (`DEFAULT_ICE_SERVERS` yang sama
+  dengan manager — tidak duplikat daftar), alasan tetap diekspos ke
+  pemanggil agar tidak tertelan diam-diam.
+- Malam implementasi: env nyata belum berisi TURN → `envStatus` harness
+  menampilkan `turn: disabled` (jujur, bukan dipaksa tampak aktif).
+  Live-verifikasi jalur `enabled` menunggu kredensial Metered dari user.
 
 ### Catatan desain mesh (F1.3, direvisi F1.6)
 
