@@ -75,6 +75,21 @@ bun scripts/db/apply-migrations.mjs               # apply yang pending
   default grants** untuk role PostgREST — migrasi `0005_postgrest_grants`
   memulihkannya (pola standar docs Supabase).
 
+### Catatan desain monitoring (F1.8)
+
+- **Error monitoring saja** (spek): `tracesSampleRate: 0`, tanpa replay/
+  feedback/session-replay — jejak network minimal, fokus event error.
+- **No-op terdokumentasi**: DSN kosong → `initMonitoring` melaporkan
+  `skipped: 'empty-dsn'` dan SEMUA helper tetap aman dipanggil (dev
+  tanpa DSN tidak pernah crash).
+- **Kebersihan data**: `beforeSend` memangkas query string URL dan
+  mengganti nilai kunci sensitif (`token|secret|password|authorization|
+apikey`) dengan `[difilter]` — kredensial tidak pernah sampai dashboard.
+- **Context terisolasi**: `captureError(error, {context, data})`
+  menempel konteks lewat `withScope` — tidak bocor ke event lain.
+- **Never-throw**: semua helper membungkus SDK dalam try/catch —
+  kegagalan monitoring tidak boleh menjatuhkan aplikasi.
+
 ## Supabase keepalive (anti auto-pause)
 
 Project free tier Supabase dapat auto-pause setelah lama tanpa aktivitas.
@@ -84,10 +99,14 @@ melakukan health-check project via Supabase Management API.
 Setup (sekali, oleh pemilik repo):
 
 1. Buka repo GitHub → **Settings → Secrets and variables → Actions**
-2. **New repository secret**:
-   - Name: `SUPABASE_ACCESS_TOKEN`
-   - Value: token akun Supabase (`supabase.com/dashboard/account/tokens`)
-3. Workflow file ditambahkan pada langkah F1.7 (lihat rencana fase di bawah).
+2. **New repository secret** (dua buah):
+   - Name: `SUPABASE_ACCESS_TOKEN` — token akun Supabase
+     (`supabase.com/dashboard/account/tokens`)
+   - Name: `SUPABASE_PROJECT_REF` — ref project (tercantum di `.env`
+     lokal sebagai `SUPABASE_PROJECT_REF`)
+3. Workflow `supabase-keepalive.yml` sudah terpasang (F1.7); bisa juga
+   dipicu manual dari tab **Actions → Supabase keepalive → Run workflow**.
+   Endpoint kueri diverifikasi live (HTTP 200/201, hasil `[{"?column?":1}]`).
 
 ## Struktur (Fase 1 — sistem inti; status per modul)
 
@@ -135,13 +154,24 @@ src/
                  voice-snippet-manager (orkestrasi ganti/hapus
                    snippet: upload → arahkan profil → hapus lama,
                    penghapusan lama best-effort)
-  monitoring/    ⏳ sentry — F1.8
+  monitoring/     ✅ F1.8:
+                 sentry (init dari VITE_SENTRY_DSN, no-op bila kosong;
+                   idempoten; tracesSampleRate 0 = error monitoring saja;
+                   beforeSend memangkas query URL + kunci sensitif;
+                   captureError dengan context terisolasi via withScope;
+                   addTrail breadcrumb; flushMonitoring; semua helper
+                   tidak pernah melempar)
 test-harness/    ⏳ alat uji polos — F1.6
 e2e/             ⏳ spec Playwright — F1.6
 supabase/
   migrations/    ✅ F1.2 (profiles + RLS + bucket voice-snippets + grants)
+                  ✅ F1.5 (0006: voice_snippet_path + policy select authenticated)
 .github/
-  workflows/     ⏳ CI + keepalive — F1.7
+  workflows/     ✅ F1.7:
+                 ci.yml (push/PR main: lint + typecheck + test + build
+                   via bun; test:e2e menyusul setelah F1.6)
+                 supabase-keepalive.yml (cron tiap 3 hari: `select 1`
+                   lewat Management API — anti auto-pause free tier)
 ```
 
 ### Catatan desain mesh (F1.3)

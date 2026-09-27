@@ -43,5 +43,16 @@
       <li>profile/profile-service — CRUD profiles tervalidasi Zod dua arah</li>
       <li>profile/voice-snippet-manager — orkestrasi ganti/hapus snippet aman</li>
     </ul>
+    <p>Modul monitoring (F1.8, tanpa UI):</p>
+    <ul>
+      <li>
+        monitoring/sentry — init error monitoring (no-op bila DSN kosong), scrub kredensial,
+        never-throw
+      </li>
+    </ul>
+    <p>
+      CI GitHub Actions (F1.7): ci.yml (lint+typecheck+test+build) + supabase-keepalive.yml (tiap 3
+      hari).
+    </p>
   </body>
 </html>
