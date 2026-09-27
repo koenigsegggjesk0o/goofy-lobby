@@ -216,15 +216,22 @@ src/
 test-harness/    ✅ F1.6: alat uji polos — window.__harness (auth,
                  profil+RLS probe, snippet, monitoring, mesh,
                  audio smoke; semua method defensif, log di halaman)
-e2e/             ✅ F1.6: 14 spec Playwright (Chromium, workers=1,
+e2e/             ✅ F1.6: 16 spec Playwright (Chromium, workers=1,
                  helpers/qa-env.ts baca .env lokal — kredensial QA
-                 tidak pernah masuk bundle browser)
+                 tidak pernah masuk bundle browser; mesh-three-peers
+                 3 konteks alpha+bravo+charlie — PREP 8-e, dieksekusi
+                 setelah TEST_USER_* lengkap)
 scripts/
   db/            ✅ F1.2: apply-migrations.mjs (Management API)
   dev/           ✅ F1.6: probe-webrtc.mjs (diagnostik ICE/mDNS + waktu
                  establishment dual-metrik: total offer→connected dan ICE
                  pasca-tukar-kandidat; --runs N untuk distribusi — kalibrasi
                  ambang watchdog 8-c)
+                 ✅ 9-b: doctor.mjs (triage .env per grup NAMA saja + dev
+                 server + git push + matriks spec e2e runnable)
+                 ✅ 8-f PREP: e2e-stress.mjs (bun run test:e2e:stress —
+                 playwright --repeat-each=N + agregasi durasi per spec
+                 min/median/mean/max; metodologi distribusi 8-f)
 supabase/
   migrations/    ✅ F1.2 (profiles + RLS + bucket voice-snippets + grants)
                   ✅ F1.5 (0006: voice_snippet_path + policy select authenticated)

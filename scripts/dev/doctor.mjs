@@ -100,6 +100,10 @@ const hasBravo =
   env.has('TEST_USER_BRAVO_EMAIL') &&
   env.has('TEST_USER_BRAVO_PASSWORD') &&
   env.has('TEST_USER_BRAVO_ID');
+const hasCharlie =
+  env.has('TEST_USER_CHARLIE_EMAIL') &&
+  env.has('TEST_USER_CHARLIE_PASSWORD') &&
+  env.has('TEST_USER_CHARLIE_ID');
 
 // --- 2. Dev server Vite :3000 ---
 console.log('\n== dev server (port 3000) ==');
@@ -174,6 +178,7 @@ const specs = [
   { file: 'monitoring.spec.ts', need: 'env klien inti + VITE_SENTRY_DSN' },
   { file: 'auth.spec.ts', need: 'env klien inti + QA alpha' },
   { file: 'mesh.spec.ts', need: 'env klien inti + QA alpha+bravo' },
+  { file: 'mesh-three-peers.spec.ts', need: 'env klien inti + QA alpha+bravo+charlie' },
   { file: 'profiles-rls.spec.ts', need: 'env klien inti + QA alpha+bravo' },
   { file: 'snippet.spec.ts', need: 'env klien inti + QA alpha+bravo' },
 ];
@@ -181,6 +186,7 @@ function specRunnable(need) {
   if (need === 'tidak ada (no-auth)') return true;
   if (!clientEnvReady) return false;
   if (need.includes('SENTRY_DSN')) return hasSentryDsn;
+  if (need.includes('alpha+bravo+charlie')) return hasAlpha && hasBravo && hasCharlie;
   if (need.includes('alpha+bravo')) return hasAlpha && hasBravo;
   if (need.includes('QA alpha')) return hasAlpha;
   return true;
