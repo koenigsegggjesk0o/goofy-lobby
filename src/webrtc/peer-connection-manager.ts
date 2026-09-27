@@ -58,6 +58,12 @@ export interface PeerConnectionManagerOptions {
   onPosition: (sessionId: string, position: Position) => void;
   onInvalidPosition?: (sessionId: string, reason: string) => void;
   onError?: (sessionId: string, context: string, error?: unknown) => void;
+  /**
+   * Batas waktu pembentukan koneksi per peer (watchdog establishment) —
+   * diteruskan ke IceRestartHandler setiap addPeer; hanya sisi inisiator
+   * (impolite) yang di-arm. Default 15_000 ms; nilai ≤ 0 mematikannya.
+   */
+  establishmentTimeoutMs?: number;
 }
 
 /**
@@ -85,6 +91,7 @@ export class PeerConnectionManager {
   private readonly onPosition: PeerConnectionManagerOptions['onPosition'];
   private readonly onInvalidPosition?: PeerConnectionManagerOptions['onInvalidPosition'];
   private readonly onError?: PeerConnectionManagerOptions['onError'];
+  private readonly establishmentTimeoutMs: number | undefined;
   private readonly peers = new Map<string, ManagedPeer>();
   private localStream: MediaStream | null = null;
 
@@ -98,6 +105,7 @@ export class PeerConnectionManager {
     this.onPosition = options.onPosition;
     this.onInvalidPosition = options.onInvalidPosition;
     this.onError = options.onError;
+    this.establishmentTimeoutMs = options.establishmentTimeoutMs;
   }
 
   // ============================================================
@@ -169,6 +177,7 @@ export class PeerConnectionManager {
       restart: new IceRestartHandler({
         getConnectionState: () => pc.connectionState,
         getIceConnectionState: () => pc.iceConnectionState,
+        establishmentTimeoutMs: this.establishmentTimeoutMs,
         onRestart: async () => {
           // Hanya sisi inisiator yang me-restart — sisi polite menunggu
           // (restart dari dua sisi bersamaan = glare yang tidak perlu).
@@ -188,6 +197,13 @@ export class PeerConnectionManager {
     if (!polite) {
       const dc = pc.createDataChannel(DATA_CHANNEL_LABEL, { ordered: false, maxRetransmits: 0 });
       this.attachDataChannel(peer, dc);
+      // Watchdog establishment hanya dipasang di sisi INISIATOR (impolite):
+      // sisi polite sekadar menunggu offer dari inisiator — bila inisiator
+      // mati, presence-level liveness (peer-left via Supabase presence) yang
+      // menghapus peer. Watchdog ICE di sisi polite justru menghitung menuju
+      // give-up hanya karena inisiator lambat (false peer-death). Sisi
+      // inisiatorlah pemilik proses pembentukan koneksi.
+      peer.restart.arm();
     }
     this.attachLocalTracks(peer);
   }

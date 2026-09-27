@@ -16,6 +16,13 @@ export interface IceRestartHandlerOptions {
   maxDelayMs?: number;
   /** Percobaan restart maksimum sebelum menyerah (default 3). */
   maxAttempts?: number;
+  /**
+   * Batas waktu pembentukan koneksi setelah arm() — bila setelah sekian ms
+   * koneksi masih 'new'/'connecting' (tidak pernah selesai terbentuk),
+   * restart dieksekusi lewat jalur backoff yang sama (default 15_000 ms).
+   * Nilai ≤ 0 mematikan watchdog establishment sepenuhnya.
+   */
+  establishmentTimeoutMs?: number;
 }
 
 type Timer = ReturnType<typeof setTimeout>;
@@ -24,10 +31,20 @@ type Timer = ReturnType<typeof setTimeout>;
  * Pemantau kesehatan koneksi ICE untuk satu peer:
  * - 'failed' → restart segera (attempt pertama tanpa delay);
  * - 'disconnected' yang bertahan melewati masa tenggang → restart;
+ * - watchdog establishment (proaktif): arm() memasang timer — bila setelah
+ *   establishmentTimeoutMs (default 15 dtk) koneksi MASIH 'new'/'connecting'
+ *   (belum pernah mencapai hasil), restart dieksekusi lewat jalur backoff
+ *   yang sama. Menutup celah handler reaktif murni: koneksi yang nyangkut
+ *   selamanya tanpa perubahan state tidak memicu apa pun (bukti e2e: outlier
+ *   pembentukan koneksi 35,6 dtk). Tiap restart memasang watchdog baru
+ *   (percobaan establishment segar); 'connected' melucutinya;
+ *   establishmentTimeoutMs ≤ 0 mematikan fitur;
  * - backoff eksponensial antar percobaan (0 → base → 2×base → …);
  * - setelah maxAttempts tanpa perbaikan → onGiveUp (peer dianggap mati).
  *
  * observe() dipanggil setiap connectionstatechange/iceconnectionstatechange.
+ * arm() dipanggil pemilik peer saat percobaan pembentukan koneksi dimulai
+ * (sisi inisiator saja — lihat PeerConnectionManager.addPeer).
  */
 export class IceRestartHandler {
   private readonly options: IceRestartHandlerOptions;
@@ -35,9 +52,11 @@ export class IceRestartHandler {
   private readonly baseDelayMs: number;
   private readonly maxDelayMs: number;
   private readonly maxAttempts: number;
+  private readonly establishmentTimeoutMs: number;
   private attempts = 0;
   private disconnectedTimer: Timer | null = null;
   private restartTimer: Timer | null = null;
+  private establishmentTimer: Timer | null = null;
   private finished = false;
 
   constructor(options: IceRestartHandlerOptions) {
@@ -46,6 +65,7 @@ export class IceRestartHandler {
     this.baseDelayMs = options.baseDelayMs ?? 2_000;
     this.maxDelayMs = options.maxDelayMs ?? 30_000;
     this.maxAttempts = options.maxAttempts ?? 3;
+    this.establishmentTimeoutMs = options.establishmentTimeoutMs ?? 15_000;
   }
 
   /** Dipanggil pemilik peer setiap ada perubahan state koneksi. */
@@ -66,12 +86,40 @@ export class IceRestartHandler {
     }
     if (connection === 'connected') {
       this.clearDisconnectedTimer();
+      this.clearEstablishmentTimer(); // sukses → watchdog establishment dilucuti
       this.attempts = 0; // pulih → reset hitungan backoff
       return;
     }
     if (connection === 'closed') {
       this.close();
     }
+  }
+
+  /**
+   * Memasang watchdog pembentukan koneksi (establishment): bila setelah
+   * establishmentTimeoutMs koneksi masih 'new'/'connecting', restart
+   * dieksekusi lewat jalur backoff/give-up yang sama. No-op bila handler
+   * sudah selesai (finished), timer sedang berjalan, atau watchdog
+   * dinonaktifkan (establishmentTimeoutMs ≤ 0).
+   */
+  arm(): void {
+    if (this.finished || this.establishmentTimer !== null || this.establishmentTimeoutMs <= 0) {
+      return;
+    }
+    this.establishmentTimer = setTimeout(() => {
+      this.establishmentTimer = null;
+      if (this.finished) {
+        return;
+      }
+      const connection = this.options.getConnectionState();
+      // Hanya pembentukan yang nyangkut yang dieskalasi. 'connected' = sukses,
+      // 'disconnected' punya jalur masa tenggangnya sendiri, 'failed'/'closed'
+      // punya jalur reaktifnya — semuanya TIDAK boleh direstart oleh timer ini.
+      if (connection === 'new' || connection === 'connecting') {
+        // establishment belum selesai
+        this.scheduleRestart();
+      }
+    }, this.establishmentTimeoutMs);
   }
 
   private isBad(): boolean {
@@ -101,6 +149,10 @@ export class IceRestartHandler {
     if (this.restartTimer !== null || this.finished) {
       return;
     }
+    // Restart menggantikan pengawasan establishment yang mungkin masih
+    // pending (mis. pemicu reaktif 'failed'/'disconnected' saat armed) —
+    // timer segar dipasang ulang di bawah saat onRestart benar-benar menyala.
+    this.clearEstablishmentTimer();
     if (this.attempts >= this.maxAttempts) {
       this.finished = true;
       this.clearDisconnectedTimer();
@@ -117,6 +169,9 @@ export class IceRestartHandler {
       // Error dari onRestart ditelan di sini — pemiliknya sudah mencatat
       // kegagalan make-offer lewat jalur onError-nya sendiri.
       void Promise.resolve(this.options.onRestart(attempt)).catch(() => undefined);
+      // Restart = awal percobaan establishment baru → pasang watchdog kembali
+      // (no-op bila finished / masih berjalan / dinonaktifkan).
+      this.arm();
     }, delay);
   }
 
@@ -127,10 +182,18 @@ export class IceRestartHandler {
     }
   }
 
+  private clearEstablishmentTimer(): void {
+    if (this.establishmentTimer !== null) {
+      clearTimeout(this.establishmentTimer);
+      this.establishmentTimer = null;
+    }
+  }
+
   /** Hentikan pemantauan (peer ditutup normal). */
   close(): void {
     this.finished = true;
     this.clearDisconnectedTimer();
+    this.clearEstablishmentTimer();
     if (this.restartTimer !== null) {
       clearTimeout(this.restartTimer);
       this.restartTimer = null;

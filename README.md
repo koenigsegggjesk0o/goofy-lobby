@@ -160,7 +160,9 @@ src/
                  data-channel-sync (~15 posisi/detik, throttle +
                    backpressure bufferedAmount, Zod di sisi terima)
                  ice-restart-handler (failed → restart, disconnected →
-                   tenggang 5s, backoff 0/2s/4s, maks 3 percobaan)
+                   tenggang 5s, backoff 0/2s/4s, maks 3 percobaan;
+                   watchdog establishment 15s — Fase 2/8-c: mentok di
+                   new/connecting → eskalasi restart, hanya sisi inisiator)
                  mesh-room-controller (presence → penemuan peer,
                    kapasitas 8 deterministik, lifecycle join/leave,
                    antrean sinyal utk race presence vs broadcast — F1.6)
@@ -266,6 +268,17 @@ supabase/
   SEBELUM presence sync selesai (~1-2 s) — pesan dari peer yang belum
   terdaftar diantrekan (maks 50/peer, TTL 10 s) lalu di-flush saat peer
   terdaftar. Tanpa ini, offer pertama terbuang → deadlock negosiasi.
+- **Watchdog establishment (8-c)**: koneksi yang mentok di `new`/
+  `connecting` selama 15 detik (dapat dikonfigurasi lewat opsi manager
+  `establishmentTimeoutMs`) kini dieskalasi ke ICE restart lewat jalur
+  backoff/give-up yang sama — terinspirasi outlier e2e 35.6s (Task 7-a).
+  Hanya sisi INISIATOR yang di-`arm()`: sisi polite hanya menunggu offer;
+  kalau inisiator mati, presence-level liveness (peer-left Supabase)
+  yang menghapus peer — watchdog di sisi polite akan menghasilkan
+  kematian peer palsu. Restart selalu membuka jendela establishment
+  baru (re-arm), berlaku juga saat pemicu reaktif (failed/disconnected).
+  Bukti live: mesh e2e 6/6 beruntun hijau dengan watchdog aktif
+  (koneksi nyata 3-7s, jauh di bawah ambang 15s).
 - **Kapasitas room 8 orang** dipilih deterministik (urutan sessionId terkecil)
   sehingga semua klien sepakat tanpa koordinasi tambahan; pendatang ke-9+
   menerima event `room-full` lalu auto-leave.

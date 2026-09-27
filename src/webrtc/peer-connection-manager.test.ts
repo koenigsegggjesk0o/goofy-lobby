@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, type Mock } from 'vitest';
+import { IceRestartHandler } from './ice-restart-handler';
 import { PeerConnectionManager, DEFAULT_ICE_SERVERS } from './peer-connection-manager';
 import {
   asPeerConnection,
@@ -372,5 +373,56 @@ describe('PeerConnectionManager — media & posisi', () => {
 
     channel.deliver('rusak');
     expect(onInvalidPosition).toHaveBeenCalledWith(sessionB.sessionId, 'payload bukan JSON valid');
+  });
+});
+
+describe('PeerConnectionManager — watchdog establishment', () => {
+  it('impolite ter-arm → pc nyangkut connecting → offer iceRestart terkirim; polite tidak ter-arm', async () => {
+    // Spy pada prototipe tetap menjalankan implementasi asli (timer sungguhan
+    // tetap terpasang) — hanya mencatat pemanggilan arm().
+    const armSpy = vi.spyOn(IceRestartHandler.prototype, 'arm');
+    try {
+      const pcPolite = new FakeRTCPeerConnection();
+      const polite = new PeerConnectionManager({
+        selfSessionId: sessionA.sessionId,
+        createPeerConnection: () => asPeerConnection(pcPolite),
+        establishmentTimeoutMs: 10,
+        onOutgoingSignal: () => undefined,
+        onTrack: () => undefined,
+        onConnectionState: () => undefined,
+        onPosition: () => undefined,
+      });
+      polite.addPeer(sessionB, true); // polite → TIDAK meng-arm watchdog
+      expect(armSpy).not.toHaveBeenCalled();
+
+      const pc = new FakeRTCPeerConnection();
+      const signals: SignalMessage[] = [];
+      const manager = new PeerConnectionManager({
+        selfSessionId: sessionA.sessionId,
+        createPeerConnection: () => asPeerConnection(pc),
+        establishmentTimeoutMs: 10,
+        onOutgoingSignal: (message) => signals.push(message),
+        onTrack: () => undefined,
+        onConnectionState: () => undefined,
+        onPosition: () => undefined,
+      });
+      manager.addPeer(sessionB, false); // impolite → arm() dari addPeer
+      expect(armSpy).toHaveBeenCalledTimes(1);
+
+      pc.simulateState({ connectionState: 'connecting' }); // nyangkut, tidak pernah membaik
+
+      await vi.waitFor(() => {
+        expect(
+          signals.some((signal) => signal.type === 'offer' && sdpOf(signal).includes('restart')),
+        ).toBe(true);
+      });
+      // Restart menyala → handler meng-arm ulang (percobaan establishment baru).
+      expect(armSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+      manager.closeAll();
+      polite.closeAll();
+    } finally {
+      armSpy.mockRestore();
+    }
   });
 });
