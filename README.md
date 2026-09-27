@@ -57,6 +57,24 @@ Aturan penting (keharusan Vite + keamanan):
   dipanggil lewat `page.evaluate()`). Halaman ini sengaja tanpa styling —
   itu alat uji, bukan UI produk.
 
+## Migrasi database (Supabase)
+
+File SQL berada di `supabase/migrations/` (urut nomor, idempotent). Runner
+lokal memakai **Supabase Management API** — bukan koneksi DB langsung:
+
+```bash
+bun scripts/db/apply-migrations.mjs --dry-run   # lihat yang pending
+bun scripts/db/apply-migrations.mjs               # apply yang pending
+```
+
+- Membaca `SUPABASE_ACCESS_TOKEN` + `SUPABASE_PROJECT_REF` dari `.env`
+  (token wajib punya permission `database_migrations_write`).
+- Sudah applied ditandai oleh `name` di history migrasi server — aman
+  dijalankan ulang (skip yang sudah ada).
+- Catatan penting: tabel yang dibuat lewat Management API **tidak menerima
+  default grants** untuk role PostgREST — migrasi `0005_postgrest_grants`
+  memulihkannya (pola standar docs Supabase).
+
 ## Supabase keepalive (anti auto-pause)
 
 Project free tier Supabase dapat auto-pause setelah lama tanpa aktivitas.
