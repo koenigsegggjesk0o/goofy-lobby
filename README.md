@@ -106,7 +106,18 @@ src/
                    tenggang 5s, backoff 0/2s/4s, maks 3 percobaan)
                  mesh-room-controller (presence → penemuan peer,
                    kapasitas 8 deterministik, lifecycle join/leave)
-  audio/         ⏳ SpatialAudioEngine (HRTF) — F1.4
+  audio/         ✅ F1.4:
+                 types (konvensi dunia 2D → bidang x-z audio, yaw →
+                   vektor orientasi, helper posisi modern/legacy,
+                   bentuk longgar parameter sender RTP)
+                 spatial-audio-engine (MediaStreamSource → PannerNode
+                   HRTF → masterGain per peer; mute/volume global;
+                   posisi bisa datang sebelum suara; clamp ulang)
+                 audio-listener-sync (posisi + orientasi telinga
+                   lokal dari posisi dunia + yaw, fallback legacy)
+                 bitrate-adaptation (tier Opus 50k/24k/12k dari state
+                   koneksi; tenggang disconnected 5s; dedupe;
+                   retry saat setParameters gagal)
   profile/       ⏳ voiceRecorderLogic — F1.5
   monitoring/    ⏳ sentry — F1.8
 test-harness/    ⏳ alat uji polos — F1.6
@@ -120,7 +131,7 @@ supabase/
 ### Catatan desain mesh (F1.3)
 
 - **Perfect negotiation** (pola WebRTC modern): sisi dengan sessionId lebih
-  besar = *polite* (me-rollback offer saat glare), yang kecil = inisiator
+  besar = _polite_ (me-rollback offer saat glare), yang kecil = inisiator
   (membuat DataChannel + offer awal). Kedua sisi tetap aman menawar kapan pun.
 - **SDP non-trickle dengan timeout**: deskripsi dikirim utuh setelah kandidat
   ICE terkumpul (atau 2 detik) — satu pesan signaling per deskripsi, ramah
@@ -131,6 +142,30 @@ supabase/
 - **Semua payload lintas jaringan divalidasi Zod** (signal, presence, posisi);
   yang gugur dilaporkan lewat event `invalid-signal`/`invalid-position` untuk
   metrik, tidak pernah diteruskan.
+
+### Catatan desain audio (F1.4)
+
+- **Konvensi ruang**: dunia 2D (x timur, y utara) dipetakan ke bidang x-z
+  Web Audio — utara menjadi -z. Listener yaw 0 menghadap utara; suara peer
+  ditempatkan via `PannerNode` HRTF dengan model jarak `inverse`
+  (refDistance 1, rolloff 1) — makin jauh makin pelan, tanpa cone arah
+  (voice omnidirectional).
+- **Dua jalur penulisan posisi**: AudioParam modern (`positionX.value`)
+  bila tersedia, fallback `setPosition`/`setOrientation` deprecated untuk
+  browser lama — hasil jalur dilaporkan lewat `onApplyResult` untuk metrik.
+- **Pertahanan kedua**: posisi remote dari DataChannelSync hanya divalidasi
+  `finite` (bukan clamp), jadi lapisan audio meng-clamp ulang ke batas dunia
+  sebelum menyentuh panner.
+- **Urutan bebas**: posisi peer boleh datang sebelum track suara — disimpan
+  lalu diterapkan saat `addPeerVoice` (paket posisi ~15Hz biasanya mendahului
+  koneksi audio).
+- **Adaptasi bitrate reaktif**: `BitrateAdaptation` tidak berlangganan apa
+  pun — host memanggil `observe(sessionId, connectionState)` dari event
+  `peer-state`. `connected` → 50 kbps, `disconnected` 5 detik → 24 kbps,
+  `failed` → 12 kbps, pulih → naik lagi. `setParameters` ditulis hanya saat
+  tier berubah (Chrome tidak suka spam parameter) dan diulang bila gagal.
+  Sender baru (mikrofon dipasang belakangan) dilayani lewat
+  `applyCurrentTier`.
 
 ## Keputusan teknis terverifikasi (2026-06)
 

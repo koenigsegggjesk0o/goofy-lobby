@@ -146,6 +146,15 @@ export class PeerConnectionManager {
     return this.peers.get(sessionId)?.pc.iceConnectionState ?? null;
   }
 
+  /**
+   * Sender RTP milik satu peer — dibaca oleh BitrateAdaptation (lapisan audio)
+   * untuk menyetel maxBitrate sesuai kondisi koneksi. Peer tak dikenal → [].
+   */
+  getSendersOf(sessionId: string): RTCRtpSender[] {
+    const peer = this.peers.get(sessionId);
+    return peer === undefined ? [] : [...peer.pc.getSenders()];
+  }
+
   // ============================================================
   // Lifecycle peer
   // ============================================================

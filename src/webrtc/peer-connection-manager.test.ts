@@ -4,6 +4,7 @@ import {
   asPeerConnection,
   FakeRTCDataChannel,
   FakeRTCPeerConnection,
+  FakeRTCRtpSender,
   flush,
   makeSession,
 } from './test-utils';
@@ -114,6 +115,23 @@ describe('PeerConnectionManager — dasar', () => {
 
     expect(pc.closed).toBe(true);
     expect(wire.manager.has(sessionB.sessionId)).toBe(false);
+  });
+
+  it('getSendersOf mengembalikan sender peer (salinan) dan [] untuk yang tak dikenal', () => {
+    const pc = new FakeRTCPeerConnection();
+    const wire = makeManager(sessionA.sessionId, pc);
+    wire.manager.addPeer(sessionB, true);
+    const sender = new FakeRTCRtpSender(makeTrack());
+    pc.senders.push(sender);
+
+    const senders = wire.manager.getSendersOf(sessionB.sessionId);
+
+    expect(senders).toHaveLength(1);
+    expect(senders[0]).toBe(sender);
+    expect(wire.manager.getSendersOf('peer-tidak-ada')).toEqual([]);
+    // salinan: memutasi array hasil tidak mengubah internal manager
+    senders.length = 0;
+    expect(wire.manager.getSendersOf(sessionB.sessionId)).toHaveLength(1);
   });
 
   it('closeAll menutup semua peer', () => {
