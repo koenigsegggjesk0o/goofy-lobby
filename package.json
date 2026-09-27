@@ -15,7 +15,8 @@
     "test:e2e:stress": "bun scripts/dev/e2e-stress.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "doctor": "bun scripts/dev/doctor.mjs"
+    "doctor": "bun scripts/dev/doctor.mjs",
+    "verify": "bun scripts/dev/verify.mjs"
   },
   "dependencies": {
     "@sentry/browser": "11.0.0",

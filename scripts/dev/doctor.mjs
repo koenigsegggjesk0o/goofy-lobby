@@ -10,6 +10,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { SPECS, evaluateEnv, parseEnvFile, specRunnable } from './lib/env-matrix.mjs';
 
 const ROOT = resolve(import.meta.dirname, '../..');
 const ENV_PATH = resolve(ROOT, '.env');
@@ -20,19 +21,6 @@ const GREEN = '\x1b[32m';
 const YELLOW = '\x1b[33m';
 const DIM = '\x1b[2m';
 const RESET = '\x1b[0m';
-
-function parseEnvFile(path) {
-  const values = new Set();
-  if (!existsSync(path)) return values;
-  for (const rawLine of readFileSync(path, 'utf8').split('\n')) {
-    const line = rawLine.trim();
-    if (line === '' || line.startsWith('#')) continue;
-    const eq = line.indexOf('=');
-    if (eq <= 0) continue;
-    if (line.slice(eq + 1).trim() !== '') values.add(line.slice(0, eq).trim());
-  }
-  return values;
-}
 
 const env = parseEnvFile(ENV_PATH);
 const blockers = [];
@@ -121,20 +109,8 @@ if (!existsSync(EXAMPLE_PATH)) {
   for (const name of templateMissing) console.log(`      - ${name}`);
 }
 
-const clientEnvReady = env.has('VITE_SUPABASE_URL') && env.has('VITE_SUPABASE_ANON_KEY');
-const hasSentryDsn = env.has('VITE_SENTRY_DSN');
-const hasAlpha =
-  env.has('TEST_USER_ALPHA_EMAIL') &&
-  env.has('TEST_USER_ALPHA_PASSWORD') &&
-  env.has('TEST_USER_ALPHA_ID');
-const hasBravo =
-  env.has('TEST_USER_BRAVO_EMAIL') &&
-  env.has('TEST_USER_BRAVO_PASSWORD') &&
-  env.has('TEST_USER_BRAVO_ID');
-const hasCharlie =
-  env.has('TEST_USER_CHARLIE_EMAIL') &&
-  env.has('TEST_USER_CHARLIE_PASSWORD') &&
-  env.has('TEST_USER_CHARLIE_ID');
+const { clientEnvReady, hasSentryDsn, hasAlpha, hasBravo, hasCharlie } = evaluateEnv(env);
+const envFlags = { clientEnvReady, hasSentryDsn, hasAlpha, hasBravo, hasCharlie };
 
 // --- 2. Dev server Vite :3000 ---
 console.log('\n== dev server (port 3000) ==');
@@ -203,34 +179,15 @@ if (push.ok) {
 
 // --- 4. Matriks spec e2e yang bisa dijalankan sekarang ---
 console.log('\n== spec e2e runnable ==');
-const specs = [
-  { file: 'turn-config.spec.ts', need: 'tidak ada (no-auth)' },
-  { file: 'mesh-trail.spec.ts', need: 'tidak ada (no-auth)' },
-  { file: 'audio-smoke.spec.ts', need: 'env klien inti' },
-  { file: 'monitoring.spec.ts', need: 'env klien inti + VITE_SENTRY_DSN' },
-  { file: 'auth.spec.ts', need: 'env klien inti + QA alpha' },
-  { file: 'mesh.spec.ts', need: 'env klien inti + QA alpha+bravo' },
-  { file: 'mesh-three-peers.spec.ts', need: 'env klien inti + QA alpha+bravo+charlie' },
-  { file: 'profiles-rls.spec.ts', need: 'env klien inti + QA alpha+bravo' },
-  { file: 'snippet.spec.ts', need: 'env klien inti + QA alpha+bravo' },
-];
-function specRunnable(need) {
-  if (need === 'tidak ada (no-auth)') return true;
-  if (!clientEnvReady) return false;
-  if (need.includes('SENTRY_DSN')) return hasSentryDsn;
-  if (need.includes('alpha+bravo+charlie')) return hasAlpha && hasBravo && hasCharlie;
-  if (need.includes('alpha+bravo')) return hasAlpha && hasBravo;
-  if (need.includes('QA alpha')) return hasAlpha;
-  return true;
-}
+const specs = SPECS;
 for (const spec of specs) {
-  const runnable = specRunnable(spec.need);
+  const runnable = specRunnable(spec.need, envFlags);
   console.log(
     `  ${runnable ? GREEN : YELLOW}${runnable ? '✓' : '✗'}${RESET} ${spec.file} — butuh: ${spec.need}`,
   );
 }
 console.log(
-  `  ${DIM}(unit test / typecheck / lint / build tidak butuh kredensial — selalu runnable)${RESET}`,
+  `  ${DIM}(unit test / typecheck / lint / build tidak butuh kredensial — selalu runnable; gerbang lengkap: bun run verify)${RESET}`,
 );
 
 // --- Ringkasan ---

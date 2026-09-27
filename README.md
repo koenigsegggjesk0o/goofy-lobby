@@ -38,16 +38,19 @@ Aturan penting (keharusan Vite + keamanan):
 
 ## Scripts
 
-| Perintah                          | Fungsi                                         |
-| --------------------------------- | ---------------------------------------------- |
-| `bun run dev`                     | Dev server Vite di port 3000                   |
-| `bun run build`                   | Type-check (`tsc --noEmit`) + build produksi   |
-| `bun run preview`                 | Preview hasil build                            |
-| `bun run lint`                    | ESLint (flat config, typescript-eslint strict) |
-| `bun run typecheck`               | Type-check saja                                |
-| `bun run test`                    | Vitest (unit test logic murni)                 |
-| `bun run test:e2e`                | Playwright E2E lewat test-harness              |
-| `bun run format` / `format:check` | Prettier                                       |
+| Perintah                          | Fungsi                                                                                                                                      |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bun run dev`                     | Dev server Vite di port 3000                                                                                                                |
+| `bun run build`                   | Type-check (`tsc --noEmit`) + build produksi                                                                                                |
+| `bun run preview`                 | Preview hasil build                                                                                                                         |
+| `bun run lint`                    | ESLint (flat config, typescript-eslint strict)                                                                                              |
+| `bun run typecheck`               | Type-check saja                                                                                                                             |
+| `bun run test`                    | Vitest (unit test logic murni)                                                                                                              |
+| `bun run test:e2e`                | Playwright E2E lewat test-harness                                                                                                           |
+| `bun run test:e2e:stress`         | Runner stress e2e `--repeat-each=N` + distribusi durasi per spec                                                                            |
+| `bun run format` / `format:check` | Prettier                                                                                                                                    |
+| `bun run doctor`                  | Triage env/dev-server/git/matriks spec e2e                                                                                                  |
+| `bun run verify`                  | Gerbang lengkap SATU perintah: typecheck → lint → format → unit → build → e2e (spec runnable saat ini) — exit code tidak bisa tertelan pipa |
 
 ## Testing
 
