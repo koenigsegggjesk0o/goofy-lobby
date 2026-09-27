@@ -24,5 +24,22 @@ export default tseslint.config(
   },
   eslint.configs.recommended,
   ...tseslint.configs.strict,
+  // Script Node/Bun lokal (migrations runner, dsb.) — perlu globals Node.
+  {
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+        fetch: 'readonly',
+        Buffer: 'readonly',
+        URL: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+      },
+    },
+  },
   prettier,
 );
