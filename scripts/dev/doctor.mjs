@@ -174,6 +174,7 @@ if (push.ok) {
 console.log('\n== spec e2e runnable ==');
 const specs = [
   { file: 'turn-config.spec.ts', need: 'tidak ada (no-auth)' },
+  { file: 'mesh-trail.spec.ts', need: 'tidak ada (no-auth)' },
   { file: 'audio-smoke.spec.ts', need: 'env klien inti' },
   { file: 'monitoring.spec.ts', need: 'env klien inti + VITE_SENTRY_DSN' },
   { file: 'auth.spec.ts', need: 'env klien inti + QA alpha' },

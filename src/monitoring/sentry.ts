@@ -1,5 +1,7 @@
 import * as Sentry from '@sentry/browser';
 
+import { pushTrailLog } from './trail-log';
+
 // ============================================================
 // Konstanta
 // ============================================================
@@ -144,6 +146,10 @@ export function captureError(error: unknown, detail: CaptureDetail = {}): string
  * Menambahkan jejak ringan (breadcrumb) untuk konteks error di dashboard.
  * No-op aman bila SDK belum init. Level default 'info' (mis. event mesh
  * 'error' dikirim 'error' — lihat mesh-trail.ts).
+ *
+ * Task 10-a: setiap pemanggilan juga tercatat ke ring lokal trail-log
+ * (SEBELUM SDK) supaya jejak tetap teramati tanpa DSN — dashboard-side
+ * tetap butuh DSN, app-side kini terverifikasi e2e no-auth.
  */
 export function addTrail(
   message: string,
@@ -151,6 +157,7 @@ export function addTrail(
   category = 'app',
   level: 'info' | 'error' = 'info',
 ): void {
+  pushTrailLog(message, data, category, level);
   try {
     activeSdk.addBreadcrumb({
       message,

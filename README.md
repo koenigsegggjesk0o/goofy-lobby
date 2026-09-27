@@ -135,6 +135,10 @@ apikey`) dengan `[difilter]` — kredensial tidak pernah sampai dashboard.
   sebagai level `error`, sisanya `info`. Harness memanggilnya di setiap
   `#pushMeshLog` + join/leave attempt, jadi error mesh di dashboard
   membawa jejak konteks terakhir, bukan stack trace kosong.
+- **Ring jejak lokal (Task 10-a)**: `trail-log.ts` merekam setiap
+  `addTrail` ke ring FIFO 50 entri SEBELUM menyentuh SDK — jejak
+  breadcrumb teramati via `window.__harness.trailLog()` TANPA DSN
+  (e2e no-auth `mesh-trail.spec.ts`); dashboard-side tetap butuh DSN.
 
 ## Supabase keepalive (anti auto-pause)
 
@@ -216,7 +220,7 @@ src/
 test-harness/    ✅ F1.6: alat uji polos — window.__harness (auth,
                  profil+RLS probe, snippet, monitoring, mesh,
                  audio smoke; semua method defensif, log di halaman)
-e2e/             ✅ F1.6: 16 spec Playwright (Chromium, workers=1,
+e2e/             ✅ F1.6: 17 spec Playwright (Chromium, workers=1,
                  helpers/qa-env.ts baca .env lokal — kredensial QA
                  tidak pernah masuk bundle browser; mesh-three-peers
                  3 konteks alpha+bravo+charlie — PREP 8-e, dieksekusi

@@ -57,11 +57,14 @@
       <li>
         monitoring/mesh-trail — pemetaan event mesh → breadcrumb (konteks error terbatas ukurannya)
       </li>
+      <li>
+        monitoring/trail-log — ring lokal breadcrumb (teramati tanpa DSN, dibaca harness trailLog())
+      </li>
     </ul>
     <p>
       Test harness + e2e Playwright (F1.6): /test-harness/ mengekspos window.__harness (auth +
       captcha dummy, profil CRUD + probe RLS, snippet rekam→upload→signed URL, monitoring live, mesh
-      dua &amp; tiga konteks, audio smoke, status TURN no-auth) — 16 spec e2e.
+      dua &amp; tiga konteks, audio smoke, status TURN + jejak breadcrumb no-auth) — 17 spec e2e.
     </p>
     <p>
       CI GitHub Actions (F1.7): ci.yml (lint+typecheck+test+build) + supabase-keepalive.yml (tiap 3

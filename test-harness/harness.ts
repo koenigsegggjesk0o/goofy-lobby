@@ -45,9 +45,11 @@ import {
   addTrail,
   captureError,
   flushMonitoring,
+  getTrailLog,
   initMonitoring,
   meshTrail,
   monitoringStatus,
+  type TrailLogEntry,
 } from '../src/monitoring';
 import {
   MeshRoomController,
@@ -264,6 +266,7 @@ export interface HarnessApi {
   meshState(): MeshStateResult;
   setLocalPosition(x: number, y: number): PositionResult;
   meshLog(): MeshLogEntry[];
+  trailLog(): TrailLogEntry[];
   audioSmoke(): Promise<AudioSmokeResult>;
 }
 
@@ -1153,6 +1156,16 @@ class Harness implements HarnessApi {
 
   meshLog(): MeshLogEntry[] {
     return this.#meshLog.slice(-50);
+  }
+
+  /**
+   * Jejak breadcrumb addTrail terakhir (Task 10-a) — teramati TANPA DSN,
+   * pola QA-instrumentasi yang sama dengan meshLog. Membaca ring modul
+   * monitoring (bukan hanya jejak harness) supaya trail dari jalur produk
+   * ikut terlihat.
+   */
+  trailLog(): TrailLogEntry[] {
+    return getTrailLog();
   }
 
   // ----------------------------------------------------------
