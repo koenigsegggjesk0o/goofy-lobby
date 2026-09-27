@@ -89,25 +89,48 @@ Setup (sekali, oleh pemilik repo):
    - Value: token akun Supabase (`supabase.com/dashboard/account/tokens`)
 3. Workflow file ditambahkan pada langkah F1.7 (lihat rencana fase di bawah).
 
-## Struktur (rencana Fase 1 — sistem inti)
+## Struktur (Fase 1 — sistem inti; status per modul)
 
 ```
 src/
-  webrtc/        PeerConnectionManager, SignalingClient, SdpMunger,
-                 DataChannelSync, IceRestartHandler, MeshRoomController, types
-  audio/         SpatialAudioEngine (HRTF), AudioListenerSync, BitrateAdaptation
-  profile/       voiceRecorderLogic, useVoiceUpload (logic saja)
-  supabase/      client, authHelpers, storageHelpers, realtimeChannel
-  monitoring/    sentry
-  schemas/       positionSchema, profileSchema (Zod)
-  types/         webrtc.d.ts, user.d.ts, room.d.ts
-test-harness/    index.html + harness.ts (alat uji, polos)
-e2e/             spec Playwright
+  lib/           env (validasi VITE_*), supabase client, typed emitter
+  webrtc/        ✅ F1.3:
+                 types (Zod: signal/presence/posisi, konstanta protokol)
+                 signaling-client (broadcast Supabase Realtime 'signal')
+                 peer-connection-manager (mesh ≤7 remote peer,
+                   perfect negotiation polite/impolite, STUN default,
+                   non-trickle + gather-timeout 2s, trickle sisa)
+                 data-channel-sync (~15 posisi/detik, throttle +
+                   backpressure bufferedAmount, Zod di sisi terima)
+                 ice-restart-handler (failed → restart, disconnected →
+                   tenggang 5s, backoff 0/2s/4s, maks 3 percobaan)
+                 mesh-room-controller (presence → penemuan peer,
+                   kapasitas 8 deterministik, lifecycle join/leave)
+  audio/         ⏳ SpatialAudioEngine (HRTF) — F1.4
+  profile/       ⏳ voiceRecorderLogic — F1.5
+  monitoring/    ⏳ sentry — F1.8
+test-harness/    ⏳ alat uji polos — F1.6
+e2e/             ⏳ spec Playwright — F1.6
 supabase/
-  migrations/    SQL schema + RLS
+  migrations/    ✅ F1.2 (profiles + RLS + bucket voice-snippets + grants)
 .github/
-  workflows/     ci.yml, supabase-keepalive.yml
+  workflows/     ⏳ CI + keepalive — F1.7
 ```
+
+### Catatan desain mesh (F1.3)
+
+- **Perfect negotiation** (pola WebRTC modern): sisi dengan sessionId lebih
+  besar = *polite* (me-rollback offer saat glare), yang kecil = inisiator
+  (membuat DataChannel + offer awal). Kedua sisi tetap aman menawar kapan pun.
+- **SDP non-trickle dengan timeout**: deskripsi dikirim utuh setelah kandidat
+  ICE terkumpul (atau 2 detik) — satu pesan signaling per deskripsi, ramah
+  rate-limit Realtime. Kandidat yang datang terlambat tetap di-trickle.
+- **Kapasitas room 8 orang** dipilih deterministik (urutan sessionId terkecil)
+  sehingga semua klien sepakat tanpa koordinasi tambahan; pendatang ke-9+
+  menerima event `room-full` lalu auto-leave.
+- **Semua payload lintas jaringan divalidasi Zod** (signal, presence, posisi);
+  yang gugur dilaporkan lewat event `invalid-signal`/`invalid-position` untuk
+  metrik, tidak pernah diteruskan.
 
 ## Keputusan teknis terverifikasi (2026-06)
 

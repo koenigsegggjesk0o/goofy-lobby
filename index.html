@@ -18,5 +18,15 @@
       goofy-lobby — Fase 1: lapisan sistem saja (WebRTC, spatial audio, Supabase), belum ada UI.
       Test harness akan tersedia di /test-harness/ pada langkah F1.6.
     </p>
+    <!-- Status modul sistem (F1.3) — murni teks info, bukan UI produk. -->
+    <p>Modul sistem yang sudah ada (F1.3, tanpa UI):</p>
+    <ul>
+      <li>webrtc/types — kontrak protokol (Zod) + kapasitas room 8</li>
+      <li>webrtc/signaling-client — signaling via Supabase Realtime broadcast</li>
+      <li>webrtc/peer-connection-manager — mesh P2P, perfect negotiation, STUN</li>
+      <li>webrtc/data-channel-sync — posisi ~15x/detik, tervalidasi</li>
+      <li>webrtc/ice-restart-handler — pemulihan koneksi + backoff</li>
+      <li>webrtc/mesh-room-controller — orkestrator room (presence, lifecycle)</li>
+    </ul>
   </body>
 </html>
