@@ -118,7 +118,23 @@ src/
                  bitrate-adaptation (tier Opus 50k/24k/12k dari state
                    koneksi; tenggang disconnected 5s; dedupe;
                    retry saat setParameters gagal)
-  profile/       ⏳ voiceRecorderLogic — F1.5
+  profile/       ✅ F1.5:
+                 types (skema Zod display name/warna/path snippet,
+                   like-type Supabase storage+postgrest, adapter
+                   asProfileClient)
+                 voice-recorder (MediaRecorder audio/webm, timeslice
+                   500ms, auto-stop durasi 15s & budget 25MiB,
+                   cleanup track di semua jalur keluar)
+                 voice-snippet-service (upload folder-per-user
+                   {userId}/{snippetId}.webm, contentType persis
+                   audio/webm, tanpa upsert — bucket tanpa policy
+                   UPDATE; signed URL playback; delete; list)
+                 profile-service (CRUD profiles, validasi Zod dua
+                   arah: patch sebelum kirim + baris hasil sebelum
+                   dipakai; whitelist kolom update)
+                 voice-snippet-manager (orkestrasi ganti/hapus
+                   snippet: upload → arahkan profil → hapus lama,
+                   penghapusan lama best-effort)
   monitoring/    ⏳ sentry — F1.8
 test-harness/    ⏳ alat uji polos — F1.6
 e2e/             ⏳ spec Playwright — F1.6
@@ -166,6 +182,39 @@ supabase/
   tier berubah (Chrome tidak suka spam parameter) dan diulang bila gagal.
   Sender baru (mikrofon dipasang belakangan) dilayani lewat
   `applyCurrentTier`.
+
+### Catatan desain profil & snippet suara (F1.5)
+
+- **Migrasi 0006**: kolom `profiles.voice_snippet_path` (penunjuk snippet
+  aktif, constraint format satu-level `{folder}/{file}.webm`) + policy
+  SELECT bucket `voice-snippets` dilonggarkan ke semua user authenticated
+  (snippet = intro suara profil, memang untuk didengar member lain).
+  INSERT/DELETE bucket tetap owner-only (folder-per-user).
+- **Tanpa upsert**: bucket `voice-snippets` sengaja tidak punya policy
+  UPDATE — snippet baru selalu path baru (`{userId}/snippet-{ts}-{rand}.webm`);
+  mengganti = unggah baru → arahkan profil → hapus objek lama. Gagal hapus
+  lama = non-fatal (objek orphan, tidak membocorkan apa pun, dilaporkan ke
+  `onError` untuk metrik).
+- **Urutan aman**: profil SELALU menunjuk objek yang ada — bila update
+  profil gagal setelah upload, objek baru yang jadi orphan (bukan profil
+  menunjuk objek hilang).
+- **MIME dua lapis**: perekaman memilih MIME pertama yang didukung dari
+  `audio/webm` / `audio/webm;codecs=opus`; header Content-Type upload selalu
+  PERSIS `audio/webm` (allowed_mime_types bucket tidak menerima varian
+  `;codecs=`). Validasi blob lokal (ukuran 1 B–25 MiB, MIME awalan
+  `audio/webm`) terjadi sebelum menyentuh jaringan.
+- **Auto-stop dua lapis**: durasi 15 detik + budget byte 25 MiB dipantau
+  SELAMA perekaman (timeslice 500 ms); hasil tetap valid dengan flag
+  `autoStopped` menjelaskan alasan. Semua jalur keluar (stop/cancel/error)
+  menghentikan track mikropon supaya indikator mic browser tidak nyangkut.
+- **Validasi dua arah**: patch profil divalidasi Zod sebelum kirim
+  (whitelist kolom), baris hasil PostgREST divalidasi ulang sebelum dipakai
+  — baris jahat tidak pernah diteruskan mentah.
+- **Bukti kompatibilitas Supabase**: sisi storage dibuktikan level-tipe
+  (klien asli assignable tanpa cast); sisi PostgREST tidak mungkin statis
+  (TS2589 — generics `GetResult` atas schema `any`), jadi dibuktikan runtime
+  di `type-compat.test.ts` + adapter `asProfileClient()` (cast tunggal
+  terdokumentasi).
 
 ## Keputusan teknis terverifikasi (2026-06)
 

@@ -18,7 +18,7 @@
       goofy-lobby — Fase 1: lapisan sistem saja (WebRTC, spatial audio, Supabase), belum ada UI.
       Test harness akan tersedia di /test-harness/ pada langkah F1.6.
     </p>
-    <!-- Status modul sistem (F1.3 + F1.4) — murni teks info, bukan UI produk. -->
+    <!-- Status modul sistem (F1.3 + F1.4 + F1.5) — murni teks info, bukan UI produk. -->
     <p>Modul sistem yang sudah ada (F1.3, tanpa UI):</p>
     <ul>
       <li>webrtc/types — kontrak protokol (Zod) + kapasitas room 8</li>
@@ -34,6 +34,14 @@
       <li>audio/spatial-audio-engine — PannerNode HRTF per peer + master gain</li>
       <li>audio/audio-listener-sync — posisi + orientasi telinga lokal (yaw)</li>
       <li>audio/bitrate-adaptation — tier Opus high/medium/low dari state koneksi</li>
+    </ul>
+    <p>Modul profil &amp; snippet suara (F1.5, tanpa UI):</p>
+    <ul>
+      <li>profile/types — skema Zod (display name, warna, path snippet) + like-type Supabase</li>
+      <li>profile/voice-recorder — MediaRecorder, auto-stop 15s/25MiB, cleanup track</li>
+      <li>profile/voice-snippet-service — upload bucket voice-snippets (folder-per-user)</li>
+      <li>profile/profile-service — CRUD profiles tervalidasi Zod dua arah</li>
+      <li>profile/voice-snippet-manager — orkestrasi ganti/hapus snippet aman</li>
     </ul>
   </body>
 </html>
