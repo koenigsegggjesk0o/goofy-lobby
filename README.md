@@ -221,7 +221,10 @@ e2e/             ✅ F1.6: 14 spec Playwright (Chromium, workers=1,
                  tidak pernah masuk bundle browser)
 scripts/
   db/            ✅ F1.2: apply-migrations.mjs (Management API)
-  dev/           ✅ F1.6: probe-webrtc.mjs (diagnostik ICE/mDNS)
+  dev/           ✅ F1.6: probe-webrtc.mjs (diagnostik ICE/mDNS + waktu
+                 establishment dual-metrik: total offer→connected dan ICE
+                 pasca-tukar-kandidat; --runs N untuk distribusi — kalibrasi
+                 ambang watchdog 8-c)
 supabase/
   migrations/    ✅ F1.2 (profiles + RLS + bucket voice-snippets + grants)
                   ✅ F1.5 (0006: voice_snippet_path + policy select authenticated)
