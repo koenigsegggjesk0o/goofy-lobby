@@ -45,6 +45,7 @@ import { captureError, flushMonitoring, initMonitoring, monitoringStatus } from 
 import {
   MeshRoomController,
   readTurnEnvFromVite,
+  resolveIceServers,
   type PeerState,
   type SessionInfo,
   type SupabaseRealtimeLike,
@@ -1015,6 +1016,18 @@ class Harness implements HarnessApi {
           message: 'sudah join — leaveMesh dulu',
         };
       }
+      // Resolusi ICE (Task 8-d): env VITE_TURN_* → iceServers STUN+TURN.
+      // Dikerjakan SEBELUM auth supaya status TURN selalu tercatat di log
+      // walau join nanti ditolak (belum signin) — masalah konfigurasi tidak
+      // ditelan: invalid → log alasan + fallback STUN-only (pola monitoring).
+      const { iceServers, turnStatus, reasons } = resolveIceServers();
+      if (turnStatus === 'invalid') {
+        this.logLine(
+          `joinMesh: TURN env INVALID — fallback STUN-only (${(reasons ?? []).join('; ')})`,
+        );
+      } else if (turnStatus === 'enabled') {
+        this.logLine('joinMesh: TURN aktif — STUN default + entri TURN relay');
+      }
       const userId = await this.#requireUserId();
       const profile = await this.#services().profiles.getProfile(userId);
       const sessionId = `harness-${crypto.randomUUID().slice(0, 8)}`;
@@ -1028,6 +1041,7 @@ class Harness implements HarnessApi {
         supabase: this.#instrumentSupabase(),
         roomCode,
         self,
+        iceServers,
       });
       controller.on('peer-joined', ({ peer }) =>
         this.#pushMeshLog('peer-joined', { peer: peerSummary(peer) }),

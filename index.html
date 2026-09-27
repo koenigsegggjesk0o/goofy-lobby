@@ -28,7 +28,10 @@
       <li>webrtc/data-channel-sync — posisi ~15x/detik, tervalidasi</li>
       <li>webrtc/ice-restart-handler — pemulihan koneksi + backoff</li>
       <li>webrtc/mesh-room-controller — orkestrator room (presence, lifecycle)</li>
-      <li>webrtc/turn-config — konfigurasi TURN fallback (Fase 2): env VITE_TURN_* → iceServers</li>
+      <li>
+        webrtc/turn-config — konfigurasi TURN fallback (Fase 2): env VITE_TURN_* → iceServers,
+        dipakai joinMesh harness
+      </li>
     </ul>
     <p>Modul audio spasial (F1.4, tanpa UI):</p>
     <ul>
@@ -55,7 +58,7 @@
     <p>
       Test harness + e2e Playwright (F1.6): /test-harness/ mengekspos window.__harness (auth +
       captcha dummy, profil CRUD + probe RLS, snippet rekam→upload→signed URL, monitoring live, mesh
-      dua konteks, audio smoke) — 14 spec e2e hijau.
+      dua konteks, audio smoke, status TURN no-auth) — 15 spec e2e.
     </p>
     <p>
       CI GitHub Actions (F1.7): ci.yml (lint+typecheck+test+build) + supabase-keepalive.yml (tiap 3
