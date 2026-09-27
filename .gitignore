@@ -1,0 +1,32 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+coverage/
+
+# env & rahasia — JANGAN pernah commit (kecuali contoh)
+.env
+.env.*
+!.env.example
+
+# logs
+*.log
+
+# hasil test
+playwright-report/
+test-results/
+
+# OS
+.DS_Store
+
+# artefak sandbox (lokal saja — bukan bagian dari produk)
+Caddyfile
+worklog.md
+download/
+upload/
+mini-services/
+skills/
+.zscripts/
+.z-ai-config/
+.claude/

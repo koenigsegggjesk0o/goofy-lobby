@@ -1,0 +1,8 @@
+bun.lock
+.env*
+dev.log
+playwright-report
+test-results
+coverage
+dist
+Caddyfile
