@@ -20,30 +20,6 @@ export type PeerConnectionFactory = (config: RTCConfiguration) => RTCPeerConnect
 export const defaultPeerConnectionFactory: PeerConnectionFactory = (config) =>
   new RTCPeerConnection(config);
 
-/**
- * Menunggu kandidat ICE terkumpul (non-trickle: SDP dikirim utuh sekali),
- * dengan batas waktu supaya STUN yang lambat tidak menggantung signaling.
- */
-export function waitForIceGathering(pc: RTCPeerConnection, timeoutMs: number): Promise<void> {
-  if (pc.iceGatheringState === 'complete') {
-    return Promise.resolve();
-  }
-  return new Promise<void>((resolve) => {
-    const finish = () => {
-      clearTimeout(timer);
-      pc.removeEventListener('icegatheringstatechange', onChange);
-      resolve();
-    };
-    const timer = setTimeout(finish, timeoutMs);
-    const onChange = () => {
-      if (pc.iceGatheringState === 'complete') {
-        finish();
-      }
-    };
-    pc.addEventListener('icegatheringstatechange', onChange);
-  });
-}
-
 interface ManagedPeer {
   session: SessionInfo;
   pc: RTCPeerConnection;
@@ -57,6 +33,12 @@ interface ManagedPeer {
   isSettingRemoteAnswerPending: boolean;
   /** true setelah offer/answer terkirim — kandidat setelahnya di-trickle. */
   descriptionSent: boolean;
+  /** Naik setiap deskripsi remote diterima — pendeteksi answer basi. */
+  remoteDescriptionEpoch: number;
+  /** Kandidat lokal yang muncul sebelum deskripsi terkirim (menanti flush). */
+  pendingLocalCandidates: RTCIceCandidateInit[];
+  /** Kandidat remote yang tiba sebelum remoteDescription siap (menanti flush). */
+  pendingRemoteCandidates: RTCIceCandidateInit[];
   sync: DataChannelSync | null;
   restart: IceRestartHandler;
 }
@@ -65,8 +47,6 @@ export interface PeerConnectionManagerOptions {
   selfSessionId: string;
   iceServers?: RTCIceServer[];
   createPeerConnection?: PeerConnectionFactory;
-  /** Batas waktu pengumpulan kandidat ICE sebelum SDP dikirim (default 2000 ms). */
-  gatherTimeoutMs?: number;
   /** Sinyal keluar (offer/answer/ice) — kirimkan via SignalingClient. */
   onOutgoingSignal: (message: SignalMessage) => void;
   onTrack: (sessionId: string, track: MediaStreamTrack, stream: MediaStream | null) => void;
@@ -87,15 +67,18 @@ export interface PeerConnectionManagerOptions {
  * dari kedua sisi tidak saling bertabrakan: sisi impolite mengabaikan offer
  * lawan saat glare, sisi polite me-rollback offer-nya lalu menjawab.
  *
- * SDP dikirim utuh setelah kandidat terkumpul (atau timeout) — satu pesan
- * signaling per deskripsi, ramah rate-limit broadcast Supabase Realtime.
- * Kandidat yang datang terlambat tetap di-trickle lewat pesan 'ice'.
+ * Deskripsi (offer/answer) dikirim SEGERA setelah setLocalDescription —
+ * tanpa menunggu pengumpulan kandidat — lalu semua kandidat di-trickle
+ * lewat pesan 'ice'. Evolusi desain F1.6: menunggu kandidat menciptakan
+ * window race panjang tempat deskripsi bisa kehilangan pasangannya saat
+ * glare/rollback (bukti e2e: "m-lines doesn't match" / "SSL role" gagal).
+ * Kandidat yang muncul sebelum deskripsi terkirim, atau tiba sebelum
+ * remoteDescription siap, di-buffer lalu di-flush pada titik yang aman.
  */
 export class PeerConnectionManager {
   private readonly selfSessionId: string;
   private readonly iceServers: RTCIceServer[];
   private readonly createPeerConnection: PeerConnectionFactory;
-  private readonly gatherTimeoutMs: number;
   private readonly onOutgoingSignal: (message: SignalMessage) => void;
   private readonly onTrack: PeerConnectionManagerOptions['onTrack'];
   private readonly onConnectionState: PeerConnectionManagerOptions['onConnectionState'];
@@ -109,7 +92,6 @@ export class PeerConnectionManager {
     this.selfSessionId = options.selfSessionId;
     this.iceServers = options.iceServers ?? DEFAULT_ICE_SERVERS;
     this.createPeerConnection = options.createPeerConnection ?? defaultPeerConnectionFactory;
-    this.gatherTimeoutMs = options.gatherTimeoutMs ?? 2_000;
     this.onOutgoingSignal = options.onOutgoingSignal;
     this.onTrack = options.onTrack;
     this.onConnectionState = options.onConnectionState;
@@ -180,6 +162,9 @@ export class PeerConnectionManager {
       ignoreOffer: false,
       isSettingRemoteAnswerPending: false,
       descriptionSent: false,
+      remoteDescriptionEpoch: 0,
+      pendingLocalCandidates: [],
+      pendingRemoteCandidates: [],
       sync: null,
       restart: new IceRestartHandler({
         getConnectionState: () => pc.connectionState,
@@ -305,19 +290,19 @@ export class PeerConnectionManager {
       if (event.candidate === null) {
         return; // penanda end-of-candidates
       }
-      if (!peer.descriptionSent) {
-        return; // kandidat sudah tercakup dalam SDP yang dikirim
-      }
-      this.onOutgoingSignal({
-        v: PROTOCOL_VERSION,
-        type: 'ice',
-        from: this.selfSessionId,
-        to: peer.session.sessionId,
+      const candidate: RTCIceCandidateInit = {
         candidate: event.candidate.candidate,
         sdpMid: event.candidate.sdpMid,
         sdpMLineIndex: event.candidate.sdpMLineIndex,
         usernameFragment: event.candidate.usernameFragment,
-      });
+      };
+      if (!peer.descriptionSent) {
+        // Deskripsi belum keluar — tahan kandidat, flush setelah terkirim
+        // (deskripsi instan memang tidak memuat kandidat lagi).
+        peer.pendingLocalCandidates.push(candidate);
+        return;
+      }
+      this.sendCandidate(peer, candidate);
     });
 
     pc.addEventListener('track', (event) => {
@@ -370,8 +355,9 @@ export class PeerConnectionManager {
 
   /**
    * Membuat + mengirim offer. makingOffer hanya true selama setLocalDescription
-   * (sesuai pola perfect negotiation); pengumpulan ICE ditunggu sesudahnya
-   * supaya offer tidak dianggap menggantung saat answer datang lebih dulu.
+   * (sesuai pola perfect negotiation). Offer dikirim SEGERA tanpa menunggu
+   * kandidat (trickle penuh — lihat catatan kelas) supaya tidak ada window
+   * race yang bisa membius deskripsi saat glare/rollback.
    */
   private async makeOffer(peer: ManagedPeer, opts: { iceRestart?: boolean } = {}): Promise<void> {
     if (peer.pc.signalingState === 'closed') {
@@ -391,23 +377,35 @@ export class PeerConnectionManager {
     } finally {
       peer.makingOffer = false;
     }
-    try {
-      await waitForIceGathering(peer.pc, this.gatherTimeoutMs);
-      const description = peer.pc.localDescription;
-      if (description === null || description.sdp === null || description.sdp === '') {
-        throw new Error('localDescription tidak tersedia setelah setLocalDescription');
-      }
-      this.onOutgoingSignal({
-        v: PROTOCOL_VERSION,
-        type: 'offer',
-        from: this.selfSessionId,
-        to: peer.session.sessionId,
-        sdp: description.sdp,
-      });
-      peer.descriptionSent = true;
-    } catch (error) {
-      this.onError?.(peer.session.sessionId, 'send-offer', error);
+    // Race rollback (bukti e2e F1.6): bila offer ini dijawab cepat atau
+    // di-rollback oleh offer remote dalam microtask window, jangan kirim
+    // deskripsi basi.
+    if (peer.pc.signalingState !== 'have-local-offer') {
+      return;
     }
+    const description = peer.pc.localDescription;
+    if (
+      description === null ||
+      description.type !== 'offer' ||
+      description.sdp === null ||
+      description.sdp === ''
+    ) {
+      this.onError?.(
+        peer.session.sessionId,
+        'send-offer',
+        new Error('localDescription bukan offer yang tertunda'),
+      );
+      return;
+    }
+    this.onOutgoingSignal({
+      v: PROTOCOL_VERSION,
+      type: 'offer',
+      from: this.selfSessionId,
+      to: peer.session.sessionId,
+      sdp: description.sdp,
+    });
+    peer.descriptionSent = true;
+    this.flushLocalCandidates(peer);
   }
 
   /** Menangani offer/answer masuk dengan semantik perfect negotiation. */
@@ -424,15 +422,25 @@ export class PeerConnectionManager {
       return; // sisi impolite mengabaikan offer saat glare
     }
     peer.isSettingRemoteAnswerPending = description.type === 'answer';
+    // Epoch: naik tiap deskripsi remote yang diterima. Bila offer LAIN datang
+    // di tengah pemrosesan offer ini, epoch berganti — answer utk offer ini
+    // batal dikirim (jalur offer baru yang mengirim answer-nya sendiri).
+    // (Perbandingan string SDP tidak bisa dipakai: browser menormalisasi SDP
+    // saat setRemote — bukti e2e F1.6.)
+    const epoch = ++peer.remoteDescriptionEpoch;
     try {
       // Sisi polite otomatis me-rollback offer-nya di sini (rollback implisit).
       await peer.pc.setRemoteDescription(description);
+      // remoteDescription kini ada — kandidat remote yang tertahan bisa masuk.
+      this.flushRemoteCandidates(peer);
       if (description.type === 'offer') {
         await peer.pc.setLocalDescription();
-        await waitForIceGathering(peer.pc, this.gatherTimeoutMs);
+        if (peer.remoteDescriptionEpoch !== epoch) {
+          return; // offer lain sudah diproses — answer ini basi
+        }
         const local = peer.pc.localDescription;
-        if (local === null || local.sdp === null || local.sdp === '') {
-          throw new Error('localDescription kosong saat menjawab offer');
+        if (local === null || local.type !== 'answer' || local.sdp === null || local.sdp === '') {
+          throw new Error('localDescription bukan answer setelah setLocalDescription');
         }
         this.onOutgoingSignal({
           v: PROTOCOL_VERSION,
@@ -442,6 +450,7 @@ export class PeerConnectionManager {
           sdp: local.sdp,
         });
         peer.descriptionSent = true;
+        this.flushLocalCandidates(peer);
       }
     } catch (error) {
       this.onError?.(peer.session.sessionId, 'handle-description', error);
@@ -457,6 +466,11 @@ export class PeerConnectionManager {
       sdpMLineIndex: message.sdpMLineIndex,
       ...(message.usernameFragment != null ? { usernameFragment: message.usernameFragment } : {}),
     };
+    if (peer.pc.remoteDescription === null) {
+      // Deskripsi remote belum diterapkan — tahan, flush oleh handleDescription.
+      peer.pendingRemoteCandidates.push(candidate);
+      return;
+    }
     void peer.pc.addIceCandidate(candidate).catch((error: unknown) => {
       // Kandidat yang datang sebelum remote description wajar tertolak;
       // hanya laporkan bila bukan akibat offer yang sengaja diabaikan.
@@ -464,5 +478,50 @@ export class PeerConnectionManager {
         this.onError?.(peer.session.sessionId, 'add-ice-candidate', error);
       }
     });
+  }
+
+  // ============================================================
+  // Trickle helpers
+  // ============================================================
+
+  private sendCandidate(peer: ManagedPeer, candidate: RTCIceCandidateInit): void {
+    this.onOutgoingSignal({
+      v: PROTOCOL_VERSION,
+      type: 'ice',
+      from: this.selfSessionId,
+      to: peer.session.sessionId,
+      candidate: candidate.candidate ?? null,
+      sdpMid: candidate.sdpMid ?? null,
+      sdpMLineIndex: candidate.sdpMLineIndex ?? null,
+      usernameFragment: candidate.usernameFragment ?? null,
+    });
+  }
+
+  /** Kirim semua kandidat lokal yang tertahan (dipanggil saat deskripsi keluar). */
+  private flushLocalCandidates(peer: ManagedPeer): void {
+    const pending = peer.pendingLocalCandidates;
+    if (pending.length === 0) {
+      return;
+    }
+    peer.pendingLocalCandidates = [];
+    for (const candidate of pending) {
+      this.sendCandidate(peer, candidate);
+    }
+  }
+
+  /** Terapkan semua kandidat remote yang tertahan (dipanggil setelah setRemote). */
+  private flushRemoteCandidates(peer: ManagedPeer): void {
+    const pending = peer.pendingRemoteCandidates;
+    if (pending.length === 0) {
+      return;
+    }
+    peer.pendingRemoteCandidates = [];
+    for (const candidate of pending) {
+      void peer.pc.addIceCandidate(candidate).catch((error: unknown) => {
+        if (!peer.ignoreOffer) {
+          this.onError?.(peer.session.sessionId, 'add-ice-candidate', error);
+        }
+      });
+    }
   }
 }

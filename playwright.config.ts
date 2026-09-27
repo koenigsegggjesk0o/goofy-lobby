@@ -1,10 +1,13 @@
 import { defineConfig, devices } from '@playwright/test';
 
 // E2E berjalan lewat test-harness (halaman polos tanpa styling — alat uji,
-// bukan UI produk). Browser: Chromium saja untuk Fase 1.
+// bukan UI produk). Browser: Chromium saja untuk Fase 1. Workers = 1: spec
+// memakai QA users & state live yang sama (profil/snippet alpha) sehingga
+// paralelisme hanya menambah flakiness tanpa mempercepat apa pun.
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: false,
+  workers: 1,
   timeout: 90_000,
   retries: 0,
   reporter: [['list']],

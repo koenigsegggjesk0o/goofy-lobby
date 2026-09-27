@@ -24,13 +24,16 @@ export interface MeshRoomControllerOptions {
   self: SessionInfo;
   iceServers?: RTCIceServer[];
   createPeerConnection?: PeerConnectionFactory;
-  /** Batas waktu pengumpulan ICE per deskripsi (default 2000 ms). */
-  gatherTimeoutMs?: number;
   /** Jam injeksi untuk test. */
   now?: () => number;
 }
 
 type JoinState = 'idle' | 'joined' | 'left';
+
+/** Umur maksimum sinyal tertahan (peer tak dikenal) sebelum dibersihkan. */
+const PENDING_SIGNAL_TTL_MS = 10_000;
+/** Batas antrean per peer — sinyal lebih lama dibuang (terlama duluan). */
+const PENDING_SIGNAL_MAX_PER_PEER = 50;
 
 /**
  * Orkestrator satu room mesh: gabung channel Realtime (broadcast signaling +
@@ -88,7 +91,6 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
       selfSessionId: this.self.sessionId,
       iceServers: options.iceServers,
       createPeerConnection: options.createPeerConnection,
-      gatherTimeoutMs: options.gatherTimeoutMs,
       onOutgoingSignal: (message) => this.signaling.send(message),
       onTrack: (sessionId, track, stream) =>
         this.emit('remote-stream', { sessionId, track, stream }),
@@ -161,6 +163,7 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
     }
     const wasJoined = this.state === 'joined';
     this.state = 'left';
+    this.pendingSignals.clear();
     if (wasJoined) {
       this.signaling.send({ v: PROTOCOL_VERSION, type: 'bye', from: this.self.sessionId, to: '*' });
     }
@@ -242,11 +245,44 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
       // sempat didaftarkan oleh sync → daftarkan sekarang, lalu proses pesan.
       const session = this.readPresence().get(message.from);
       if (session === undefined) {
+        // Race e2e F1.6: broadcast bisa tiba SEBELUM presence sync selesai
+        // (subscribe+track lebih dulu, sync ~1-2 s belakangan). Membuang
+        // offer/kandidat di sini = deadlock negosiasi — antrekan, nanti
+        // di-flush saat peer benar-benar terdaftar lewat connectPeer.
+        this.queuePendingSignal(message);
         return;
       }
       this.connectPeer(session);
     }
     this.manager.handleSignal(message);
+  }
+
+  /** Antrean pesan signaling dari peer yang belum terdaftar (race presence). */
+  private readonly pendingSignals = new Map<string, { at: number; message: SignalMessage }[]>();
+
+  private queuePendingSignal(message: SignalMessage): void {
+    const now = this.now();
+    this.sweepPendingSignals(now);
+    let queue = this.pendingSignals.get(message.from);
+    if (queue === undefined) {
+      queue = [];
+      this.pendingSignals.set(message.from, queue);
+    }
+    if (queue.length >= PENDING_SIGNAL_MAX_PER_PEER) {
+      queue.shift(); // terbatas — buang yang terlama
+    }
+    queue.push({ at: now, message });
+  }
+
+  private sweepPendingSignals(now: number): void {
+    for (const [sessionId, queue] of this.pendingSignals) {
+      const alive = queue.filter((entry) => now - entry.at <= PENDING_SIGNAL_TTL_MS);
+      if (alive.length === 0) {
+        this.pendingSignals.delete(sessionId);
+      } else {
+        this.pendingSignals.set(sessionId, alive);
+      }
+    }
   }
 
   private handlePresenceSync(): void {
@@ -285,6 +321,7 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
 
   /** Melepas peer + membersihkan cache + memancarkan peer-left. */
   private dropPeer(sessionId: string): void {
+    this.pendingSignals.delete(sessionId);
     this.manager.removePeer(sessionId);
     this.lastEmittedStates.delete(sessionId);
     this.emit('peer-left', { sessionId });
@@ -294,9 +331,17 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
     // sessionId lebih besar = polite (mengalah saat glare), kecil = inisiator.
     const polite = this.self.sessionId > session.sessionId;
     this.manager.addPeer(session, polite);
+    const queued = this.pendingSignals.get(session.sessionId);
+    this.pendingSignals.delete(session.sessionId);
     const peer = this.buildPeerState(session.sessionId);
     if (peer !== null) {
       this.emit('peer-joined', { peer });
+    }
+    // Flush sinyal yang sempat tertahan saat race presence — urutan terjaga.
+    if (queued !== undefined) {
+      for (const entry of queued) {
+        this.manager.handleSignal(entry.message);
+      }
     }
   }
 

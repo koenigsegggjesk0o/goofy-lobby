@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>goofy-lobby — test-harness (F1.6, alat uji — BUKAN UI produk)</title>
+  </head>
+  <body>
+    <!--
+      TEST HARNESS F1.6 — alat uji untuk Playwright e2e + pemakaian manual
+      lewat devtools. BUKAN UI produk (spek: tanpa UI sampai Fase 3) —
+      halaman ini sengaja polos tanpa styling.
+
+      Semua kemampuan diekspos sebagai window.__harness (lihat harness.ts):
+      auth (signup/signin dengan captcha dummy Turnstile), profil CRUD +
+      probe RLS, snippet suara (rekam dari stream sintetis → upload live ke
+      bucket QA), monitoring Sentry (init/capture/flush + probe ingest),
+      mesh WebRTC (join/leave/posisi/stream), dan smoke test audio spasial.
+    -->
+    <h1>goofy-lobby — test-harness (alat uji, bukan UI produk)</h1>
+    <p id="harness-status">memuat harness…</p>
+    <pre id="harness-log"></pre>
+    <script type="module" src="./harness.ts"></script>
+  </body>
+</html>

@@ -51,11 +51,48 @@ Aturan penting (keharusan Vite + keamanan):
 ## Testing
 
 - **Vitest** — unit test untuk logic murni (Zod schema, SDP munging,
-  kalkulasi posisi, cache). Tidak butuh browser.
+  kalkulasi posisi, cache). Tidak butuh browser. 230 test, 18 file.
 - **Playwright** — E2E via `test-harness/` (halaman HTML polos yang memuat
   modul sistem dan mengekspos fungsinya ke `window.__harness` supaya bisa
   dipanggil lewat `page.evaluate()`). Halaman ini sengaja tanpa styling —
-  itu alat uji, bukan UI produk.
+  itu alat uji, bukan UI produk. 14 spec e2e hidup terhadap Supabase/Sentry
+  asli (Chromium, workers=1).
+
+### Cakupan e2e (F1.6)
+
+- `auth.spec.ts` — halaman harness siap; signup TANPA captcha ditolak
+  `captcha_failed` (DoD #4); signin QA happy path (captcha dummy test key);
+  password salah → `invalid_credentials`; signout mengakhiri sesi.
+- `profiles-rls.spec.ts` — anon melihat 0 baris; authenticated membaca semua
+  baris; update baris sendiri + pulihkan; tulis baris user lain diblokir
+  RLS (0 baris tersentuh + readback tidak berubah).
+- `snippet.spec.ts` — rekam dari stream sintetis (oscillator →
+  MediaStreamDestination) lewat MediaRecorder asli; upload ke folder sendiri;
+  profil menunjuk path baru; signed URL ter-fetch (200 + `audio/webm`);
+  cleanup menyisakan bucket bersih; upload ke folder user lain ditolak RLS.
+- `monitoring.spec.ts` — init Sentry dari DSN; captureException menghasilkan
+  eventId; flush terkirim; probe langsung ke endpoint ingest HTTP 200.
+- `mesh.spec.ts` — DUA konteks browser (alpha + bravo): presence saling
+  menemukan, signaling offer/answer/ice via Realtime broadcast, koneksi P2P
+  `connected` di kedua sisi, track audio diterima, posisi mengalir lewat
+  DataChannel, leave bersih.
+- `audio-smoke.spec.ts` — SpatialAudioEngine hidup di AudioContext asli
+  (voice peer + posisi panner + listener + dispose).
+
+### Pemakaian harness manual (devtools)
+
+Buka `http://localhost:3000/test-harness/` lalu panggil dari console:
+
+```js
+await window.__harness.signIn(email, password); // captcha dummy otomatis
+await window.__harness.getProfile();
+await window.__harness.recordMockSnippet(1500);
+await window.__harness.uploadLastRecording();
+window.__harness.meshLog(); // jejak signaling utk debugging
+```
+
+Semua method defensif — tidak pernah melempar, selalu mengembalikan objek
+`{ ok, ... }` serializable. Halaman juga menampilkan log teks polos.
 
 ## Migrasi database (Supabase)
 
@@ -118,13 +155,14 @@ src/
                  signaling-client (broadcast Supabase Realtime 'signal')
                  peer-connection-manager (mesh ≤7 remote peer,
                    perfect negotiation polite/impolite, STUN default,
-                   non-trickle + gather-timeout 2s, trickle sisa)
+                   trickle penuh + buffer kandidat dua arah — F1.6)
                  data-channel-sync (~15 posisi/detik, throttle +
                    backpressure bufferedAmount, Zod di sisi terima)
                  ice-restart-handler (failed → restart, disconnected →
                    tenggang 5s, backoff 0/2s/4s, maks 3 percobaan)
                  mesh-room-controller (presence → penemuan peer,
-                   kapasitas 8 deterministik, lifecycle join/leave)
+                   kapasitas 8 deterministik, lifecycle join/leave,
+                   antrean sinyal utk race presence vs broadcast — F1.6)
   audio/         ✅ F1.4:
                  types (konvensi dunia 2D → bidang x-z audio, yaw →
                    vektor orientasi, helper posisi modern/legacy,
@@ -161,27 +199,51 @@ src/
                    captureError dengan context terisolasi via withScope;
                    addTrail breadcrumb; flushMonitoring; semua helper
                    tidak pernah melempar)
-test-harness/    ⏳ alat uji polos — F1.6
-e2e/             ⏳ spec Playwright — F1.6
+test-harness/    ✅ F1.6: alat uji polos — window.__harness (auth,
+                 profil+RLS probe, snippet, monitoring, mesh,
+                 audio smoke; semua method defensif, log di halaman)
+e2e/             ✅ F1.6: 14 spec Playwright (Chromium, workers=1,
+                 helpers/qa-env.ts baca .env lokal — kredensial QA
+                 tidak pernah masuk bundle browser)
+scripts/
+  db/            ✅ F1.2: apply-migrations.mjs (Management API)
+  dev/           ✅ F1.6: probe-webrtc.mjs (diagnostik ICE/mDNS)
 supabase/
   migrations/    ✅ F1.2 (profiles + RLS + bucket voice-snippets + grants)
                   ✅ F1.5 (0006: voice_snippet_path + policy select authenticated)
 .github/
   workflows/     ✅ F1.7:
                  ci.yml (push/PR main: lint + typecheck + test + build
-                   via bun; test:e2e menyusul setelah F1.6)
+                   via bun; e2e tetap lokal — butuh secrets TEST_USER_* +
+                   VITE_* di repo bila mau diaktifkan di CI)
                  supabase-keepalive.yml (cron tiap 3 hari: `select 1`
                    lewat Management API — anti auto-pause free tier)
 ```
 
-### Catatan desain mesh (F1.3)
+### Catatan desain mesh (F1.3, direvisi F1.6)
 
 - **Perfect negotiation** (pola WebRTC modern): sisi dengan sessionId lebih
   besar = _polite_ (me-rollback offer saat glare), yang kecil = inisiator
   (membuat DataChannel + offer awal). Kedua sisi tetap aman menawar kapan pun.
-- **SDP non-trickle dengan timeout**: deskripsi dikirim utuh setelah kandidat
-  ICE terkumpul (atau 2 detik) — satu pesan signaling per deskripsi, ramah
-  rate-limit Realtime. Kandidat yang datang terlambat tetap di-trickle.
+- **Trickle penuh dengan buffer dua arah** (revisi F1.6, bukti e2e): desain
+  awal menunggu kandidat ICE ≤2 detik lalu mengirim SDP utuh (non-trickle).
+  Window tunggu itu ternyata medan race — offer yang di-rollback saat glare
+  tetap terkirim dengan deskripsi basi ("m-lines doesn't match offer",
+  "Failed to set SSL role"), dan answer bisa salah pasangan. Sekarang:
+  deskripsi dikirim SEGERA setelah `setLocalDescription`; kandidat lokal
+  yang muncul lebih dulu di-buffer lalu di-flush; kandidat remote yang tiba
+  sebelum `remoteDescription` siap juga di-buffer. Biaya: beberapa pesan
+  `ice` ekstra per peer (host mDNS + srflx) — jauh di bawah rate-limit
+  Realtime.
+- **Guard race di deskripsi**: offer hanya dikirim bila `signalingState`
+  masih `have-local-offer` (dijawab cepat / di-rollback = batal); answer
+  dibatalkan bila `remoteDescriptionEpoch` berganti (offer lain datang di
+  tengah pemrosesan). Perbandingan string SDP TIDAK bisa dipakai — browser
+  menormalisasi SDP saat setRemote.
+- **Antrean sinyal peer-tak-dikenal** (controller): broadcast bisa tiba
+  SEBELUM presence sync selesai (~1-2 s) — pesan dari peer yang belum
+  terdaftar diantrekan (maks 50/peer, TTL 10 s) lalu di-flush saat peer
+  terdaftar. Tanpa ini, offer pertama terbuang → deadlock negosiasi.
 - **Kapasitas room 8 orang** dipilih deterministik (urutan sessionId terkecil)
   sehingga semua klien sepakat tanpa koordinasi tambahan; pendatang ke-9+
   menerima event `room-full` lalu auto-leave.

@@ -41,5 +41,18 @@ export default tseslint.config(
       },
     },
   },
+  // Probe dev yang berjalan DI BROWSER via page.evaluate — globals DOM.
+  {
+    files: ['scripts/dev/*.mjs'],
+    languageOptions: {
+      globals: {
+        window: 'readonly',
+        RTCPeerConnection: 'readonly',
+        Promise: 'readonly',
+        setTimeout: 'readonly',
+        console: 'readonly',
+      },
+    },
+  },
   prettier,
 );
