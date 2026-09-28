@@ -1,6 +1,7 @@
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import { Emitter } from '../lib/typed-emitter';
 import { PeerConnectionManager, type PeerConnectionFactory } from './peer-connection-manager';
+import { isSelectedPairRelay, type SelectedPairInfo } from './relay-stats';
 import { SignalingClient } from './signaling-client';
 import {
   MAX_ROOM_SIZE,
@@ -60,6 +61,9 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
     string,
     { connectionState: RTCPeerConnectionState; iceConnectionState: RTCIceConnectionState }
   >();
+  /** Cache pasangan terpilih terakhir per peer (Task 11-b) — diumpan ke
+   *  snapshot PeerState.selectedPair; dibersihkan saat peer dilepas. */
+  private readonly selectedPairs = new Map<string, SelectedPairInfo>();
 
   constructor(options: MeshRoomControllerOptions) {
     super();
@@ -112,6 +116,14 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
       onPosition: (sessionId, position) => this.handleRemotePosition(sessionId, position),
       onInvalidPosition: (sessionId, reason) =>
         this.emit('invalid-position', { sessionId, reason }),
+      onSelectedPair: (sessionId, pair) => {
+        this.selectedPairs.set(sessionId, pair);
+        this.emit('selected-pair', {
+          sessionId,
+          pair,
+          viaRelay: isSelectedPairRelay(pair),
+        });
+      },
       onError: (sessionId, context, error) =>
         this.emit('error', {
           message: `peer ${sessionId}: kegagalan ${context}`,
@@ -324,6 +336,7 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
     this.pendingSignals.delete(sessionId);
     this.manager.removePeer(sessionId);
     this.lastEmittedStates.delete(sessionId);
+    this.selectedPairs.delete(sessionId);
     this.emit('peer-left', { sessionId });
   }
 
@@ -385,6 +398,7 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
       iceConnectionState: this.manager.getIceConnectionState(sessionId) ?? 'closed',
       lastPosition: last?.position ?? null,
       lastPositionAt: last?.at ?? null,
+      selectedPair: this.selectedPairs.get(sessionId) ?? null,
     };
   }
 }

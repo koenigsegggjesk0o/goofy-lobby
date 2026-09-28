@@ -275,6 +275,15 @@ supabase/
   pasangan kandidat TERPILIH bertipe relay, exit code bermakna, nilai
   kredensial tidak pernah dicetak. Runbook lengkap:
   `docs/fase-2-turn-verifikasi.md`.
+- **Observabilitas pasangan terpilih di mesh nyata (Task 11-b)**: saat peer
+  `connected`, manager membaca `getStats()` lewat parser yang sama
+  (`relay-stats.ts`) → event `selected-pair` (viaRelay) + snapshot
+  `PeerState.selectedPair`; harness mengeksposnya via
+  `meshState().peers[].selectedPair` + entri `meshLog` (otomatis jadi
+  breadcrumb monitoring). Sampel segera + satu re-sample tertunda 1,5 dtk
+  (nominasi lambat khas TURN); dedupe signature — tanpa info baru, tanpa
+  emisi; `getStats` gagal = diam (observabilitas tidak boleh menjatuhkan
+  koneksi); nol biaya bila tidak ada konsumen.
 
 ### Catatan desain mesh (F1.3, direvisi F1.6)
 

@@ -53,9 +53,11 @@ import {
 } from '../src/monitoring';
 import {
   MeshRoomController,
+  isSelectedPairRelay,
   readTurnEnvFromVite,
   resolveIceServers,
   type PeerState,
+  type SelectedPairInfo,
   type SessionInfo,
   type SupabaseRealtimeLike,
   type TurnEnvStatus,
@@ -191,6 +193,16 @@ interface MeshLeaveResult extends ErrorDetail {
   ok: boolean;
 }
 
+/** Ringkasan pasangan terpilih utk snapshot peer (JSON-serializable). */
+interface MeshPeerSelectedPair {
+  localType: string;
+  remoteType: string;
+  state: string | null;
+  nominated: boolean | null;
+  selected: boolean | null;
+  viaRelay: boolean;
+}
+
 interface MeshPeerSnapshot {
   sessionId: string;
   displayName: string;
@@ -198,6 +210,7 @@ interface MeshPeerSnapshot {
   iceConnectionState: string;
   lastPosition: { x: number; y: number } | null;
   lastPositionAt: number | null;
+  selectedPair: MeshPeerSelectedPair | null;
 }
 
 interface MeshStateResult {
@@ -359,6 +372,22 @@ function peerSummary(peer: PeerState): MeshPeerSnapshot {
     iceConnectionState: peer.iceConnectionState,
     lastPosition: peer.lastPosition,
     lastPositionAt: peer.lastPositionAt,
+    selectedPair: toSelectedPairSummary(peer.selectedPair),
+  };
+}
+
+/** Pasangan terpilih → bentuk ringkas utk meshState (null diteruskan apa adanya). */
+function toSelectedPairSummary(pair: SelectedPairInfo | null): MeshPeerSelectedPair | null {
+  if (pair === null) {
+    return null;
+  }
+  return {
+    localType: pair.localType,
+    remoteType: pair.remoteType,
+    state: pair.state,
+    nominated: pair.nominated,
+    selected: pair.selected,
+    viaRelay: isSelectedPairRelay(pair),
   };
 }
 
@@ -1075,6 +1104,18 @@ class Harness implements HarnessApi {
       );
       controller.on('remote-position', ({ sessionId: id, position }) =>
         this.#pushMeshLog('remote-position', { sessionId: id, position }),
+      );
+      // Task 11-b: pasangan kandidat TERPILIH terbaca → meshLog + breadcrumb
+      // otomatis (jalur 8-g) — bukti jalur aktual (host/srflx/relay) di mesh nyata.
+      controller.on('selected-pair', ({ sessionId: id, pair, viaRelay }) =>
+        this.#pushMeshLog('selected-pair', {
+          sessionId: id,
+          localType: pair.localType,
+          remoteType: pair.remoteType,
+          state: pair.state,
+          nominated: pair.nominated,
+          viaRelay,
+        }),
       );
       controller.on('room-full', ({ size, max }) => this.#pushMeshLog('room-full', { size, max }));
       controller.on('error', ({ message, cause }) =>

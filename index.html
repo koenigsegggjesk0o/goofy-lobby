@@ -32,6 +32,10 @@
         webrtc/turn-config — konfigurasi TURN fallback (Fase 2): env VITE_TURN_* → iceServers,
         dipakai joinMesh harness; verifikasi relay: bun run probe:webrtc --turn
       </li>
+      <li>
+        webrtc/relay-stats — parser pasangan kandidat terpilih dari getStats(); dipakai probe --turn
+        dan mesh nyata (event selected-pair + PeerState.selectedPair, Task 11-b)
+      </li>
     </ul>
     <p>Modul audio spasial (F1.4, tanpa UI):</p>
     <ul>

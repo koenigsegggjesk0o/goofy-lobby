@@ -4,6 +4,7 @@
  */
 export { DataChannelSync, type DataChannelSyncOptions } from './data-channel-sync';
 export { IceRestartHandler, type IceRestartHandlerOptions } from './ice-restart-handler';
+export { isSelectedPairRelay, pickSelectedPair, type SelectedPairInfo } from './relay-stats';
 export {
   PeerConnectionManager,
   DEFAULT_ICE_SERVERS,

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { RealtimeChannel } from '@supabase/supabase-js';
+import type { SelectedPairInfo } from './relay-stats';
 
 // ============================================================
 // Konstanta protokol mesh
@@ -109,6 +110,13 @@ export interface PeerState {
   iceConnectionState: RTCIceConnectionState;
   lastPosition: Position | null;
   lastPositionAt: number | null;
+  /**
+   * Pasangan kandidat TERPILIH terakhir yang terbaca dari getStats()
+   * (Task 11-b). null = belum pernah terbaca (koneksi belum pernah
+   * 'connected' / stats belum memuat pasangan). Ini cache observabilitas,
+   * bukan bagian dari negosiasi — selalu aman diabaikan.
+   */
+  selectedPair: SelectedPairInfo | null;
 }
 
 /** Peta event yang dipancarkan MeshRoomController. */
@@ -121,6 +129,13 @@ export interface MeshRoomEventMap {
   'invalid-signal': { reason: string };
   'invalid-position': { sessionId: string; reason: string };
   'room-full': { size: number; max: number };
+  /**
+   * Pasangan kandidat terpilih berhasil dibaca untuk sebuah peer (Task 11-b).
+   * `pair` selalu non-null: sampul null (belum ada pasangan / getStats gagal)
+   * sengaja tidak dipancarkan — tanpa informasi baru, tanpa derau.
+   * viaRelay = lokal melalui relay TURN (bukti aktif di jalur koneksi nyata).
+   */
+  'selected-pair': { sessionId: string; pair: SelectedPairInfo; viaRelay: boolean };
   error: { message: string; cause?: unknown };
 }
 

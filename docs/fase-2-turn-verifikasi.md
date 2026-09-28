@@ -60,6 +60,28 @@ allocation ditolak atau jalur terblokir.
   didokumentasikan di catatan desain 8-b; itu karakteristik TURN credential
   statis, bukan kebocoran.
 
+## Verifikasi di mesh NYATA (Task 11-b)
+
+Probe membuktikan mekanisme relay secara terisolasi. Sejak 11-b, jalur mesh
+produksi **juga** melaporkan pasangan terpilih secara otomatis:
+
+- Saat peer memasuki `connected`, `PeerConnectionManager` membaca
+  `getStats()` lewat parser yang sama (`relay-stats.ts`) dan memancarkan
+  event `selected-pair` (+ satu re-sample tertunda ~1,5 dtk untuk nominasi
+  yang selesai setelah event connected — khas jalur TURN yang lambat).
+- Di test harness: `meshState().peers[].selectedPair` (snapshot: tipe
+  lokal/remote, state, nominated, viaRelay) dan entri `selected-pair` di
+  `meshLog()` — yang otomatis jadi breadcrumb monitoring (jalur 8-g).
+- Spec e2e `mesh.spec.ts` + `mesh-three-peers.spec.ts` meng-assert
+  pasangan terpilih terbaca pada koneksi nyata (butuh TEST_USER_*).
+
+Penting dibaca jujur: pada konfigurasi normal (tanpa `iceTransportPolicy:
+relay`), browser **memilih** jalur terbaik — relay hanya terpilih bila
+jalur langsung gagal. Jadi `viaRelay: true` di mesh nyata = bukti TURN
+menyelamatkan koneksi yang nyaris mati; `false` = jalur langsung lebih
+baik (normal, bukan kegagalan TURN). Bukti "TURN mampu merelay" tetap
+lewat `probe:webrtc --turn` (relay-forced).
+
 ## Status verifikasi saat dokumen ini ditulis (Task 11-a)
 
 - Jalur `disabled` / `invalid` / `enabled` — terverifikasi live di sandbox

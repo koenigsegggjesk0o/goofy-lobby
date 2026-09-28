@@ -26,6 +26,7 @@ function recordEvents(controller: MeshRoomController): RecordedEvents {
     'invalid-signal': [],
     'invalid-position': [],
     'room-full': [],
+    'selected-pair': [],
     error: [],
   } as RecordedEvents;
   for (const key of Object.keys(events) as Array<keyof MeshRoomEventMap>) {
@@ -422,5 +423,117 @@ describe('MeshRoomController — leave', () => {
     await controller.leave();
 
     await expect(controller.join()).rejects.toThrow(/sudah leave/);
+  });
+});
+
+// ============================================================
+// Observabilitas pasangan terpilih (Task 11-b)
+// ============================================================
+
+describe('MeshRoomController — pasangan terpilih (selected pair)', () => {
+  /** Entri stats pasangan terpilih + kandidatnya (bentuk RTCStats ringkas). */
+  function pairEntries(localType: string, remoteType: string): Array<Record<string, unknown>> {
+    return [
+      { id: 'L1', type: 'local-candidate', candidateType: localType },
+      { id: 'R1', type: 'remote-candidate', candidateType: remoteType },
+      {
+        id: 'P1',
+        type: 'candidate-pair',
+        localCandidateId: 'L1',
+        remoteCandidateId: 'R1',
+        state: 'succeeded',
+        nominated: true,
+        selected: true,
+      },
+    ];
+  }
+
+  /** Event selected-pair pertama — melempar bila belum terpancar (narrowing). */
+  function firstSelectedPair(events: RecordedEvents): RecordedEvents['selected-pair'][number] {
+    const first = events['selected-pair'][0];
+    if (first === undefined) {
+      throw new Error('event selected-pair belum terpancar');
+    }
+    return first;
+  }
+
+  it('peer connected dengan pasangan host/host → event selected-pair viaRelay=false + snapshot getPeers', async () => {
+    const { controller, events, pc, channel } = setup('lobby01', 'aaaa-self-0001');
+    await controller.join();
+    const peer = makePeerSession('zzzz-peer-0002');
+    channel().simulatePresence(peer);
+
+    pc(0).statsEntries = pairEntries('host', 'host');
+    pc(0).simulateState({ connectionState: 'connected', iceConnectionState: 'connected' });
+
+    await vi.waitFor(() => expect(events['selected-pair']).toHaveLength(1));
+    const emitted = firstSelectedPair(events);
+    expect(emitted.sessionId).toBe(peer.sessionId);
+    expect(emitted.viaRelay).toBe(false);
+    expect(emitted.pair.localType).toBe('host');
+    expect(emitted.pair.remoteType).toBe('host');
+
+    // Snapshot getPeers() ikut membawa cache pasangan terpilih.
+    const snapshot = controller.getPeers().find((p) => p.sessionId === peer.sessionId);
+    expect(snapshot?.selectedPair?.localType).toBe('host');
+    expect(snapshot?.selectedPair?.state).toBe('succeeded');
+
+    await controller.leave();
+  });
+
+  it('pasangan relay/relay → viaRelay=true (bukti TURN aktif di jalur nyata)', async () => {
+    const { controller, events, pc, channel } = setup('lobby01', 'aaaa-self-0001');
+    await controller.join();
+    const peer = makePeerSession('zzzz-peer-0002');
+    channel().simulatePresence(peer);
+
+    pc(0).statsEntries = pairEntries('relay', 'relay');
+    pc(0).simulateState({ connectionState: 'connected', iceConnectionState: 'connected' });
+
+    await vi.waitFor(() => expect(events['selected-pair']).toHaveLength(1));
+    const relayed = firstSelectedPair(events);
+    expect(relayed.viaRelay).toBe(true);
+    expect(relayed.pair.localType).toBe('relay');
+
+    await controller.leave();
+  });
+
+  it('belum pernah connected → snapshot selectedPair null (bukan undefined)', async () => {
+    const { controller, channel } = setup('lobby01', 'aaaa-self-0001');
+    await controller.join();
+    const peer = makePeerSession('zzzz-peer-0002');
+    channel().simulatePresence(peer);
+    await flush();
+
+    const snapshot = controller.getPeers().find((p) => p.sessionId === peer.sessionId);
+    expect(snapshot?.selectedPair).toBeNull();
+
+    await controller.leave();
+  });
+
+  it('peer-left membersihkan cache — peer yang sama bergabung lagi mulai dari null', async () => {
+    const { controller, events, pc, channel } = setup('lobby01', 'aaaa-self-0001');
+    await controller.join();
+    const peer = makePeerSession('zzzz-peer-0002');
+    channel().simulatePresence(peer);
+
+    pc(0).statsEntries = pairEntries('host', 'host');
+    pc(0).simulateState({ connectionState: 'connected', iceConnectionState: 'connected' });
+    await vi.waitFor(() => expect(events['selected-pair']).toHaveLength(1));
+    expect(
+      controller.getPeers().find((p) => p.sessionId === peer.sessionId)?.selectedPair?.localType,
+    ).toBe('host');
+
+    // Peer pergi → cache terhapus.
+    channel().removePresence(peer.sessionId);
+    await vi.waitFor(() => expect(events['peer-left']).toHaveLength(1));
+
+    // Peer yang sama datang lagi — pasangan lama TIDAK boleh bocor.
+    channel().simulatePresence(peer);
+    await flush();
+    const rejoined = controller.getPeers().find((p) => p.sessionId === peer.sessionId);
+    expect(rejoined?.selectedPair).toBeNull();
+
+    await controller.leave();
   });
 });

@@ -77,6 +77,21 @@ test('mesh dua konteks: presence, koneksi P2P, stream, posisi, leave', async ({
       )
       .toBe('connected');
 
+    // Task 11-b: pasangan kandidat TERPILIH terbaca di jalur mesh nyata
+    // (host/srflx/prflx/relay — bukti jalur aktual, bukan kandidat terkumpul).
+    for (const page of [pageAlpha, pageBravo]) {
+      await expect
+        .poll(
+          () =>
+            page.evaluate(() => {
+              const pair = window.__harness.meshState().peers[0]?.selectedPair ?? null;
+              return pair !== null && ['host', 'srflx', 'prflx', 'relay'].includes(pair.localType);
+            }),
+          { timeout: 30_000 },
+        )
+        .toBe(true);
+    }
+
     // track audio dari stream mock alpha sampai ke bravo
     await expect
       .poll(

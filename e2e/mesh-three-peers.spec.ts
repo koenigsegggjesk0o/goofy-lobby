@@ -88,6 +88,29 @@ test('mesh tiga konteks: full-mesh 2 peer/sisi, posisi broadcast dua sisi, leave
       await expect.poll(() => connectedCount(page), { timeout: 60_000 }).toBe(2);
     }
 
+    // Task 11-b: pasangan kandidat TERPILIH terbaca di jalur mesh NYATA —
+    // bukti jalur aktual (host/srflx/prflx/relay), bukan sekadar kandidat
+    // terkumpul. Sampel menyala segera setelah connected (+ re-sample ≤1.5 dtk
+    // untuk nominasi terlambat), jadi kasih ruang poll yang longgar.
+    for (const page of [pageAlpha, pageBravo, pageCharlie]) {
+      await expect
+        .poll(
+          () =>
+            page.evaluate(
+              () =>
+                window.__harness
+                  .meshState()
+                  .peers.filter(
+                    (peer) =>
+                      peer.selectedPair !== null &&
+                      ['host', 'srflx', 'prflx', 'relay'].includes(peer.selectedPair.localType),
+                  ).length,
+            ),
+          { timeout: 30_000 },
+        )
+        .toBe(2);
+    }
+
     // track audio dari stream mock alpha sampai ke bravo DAN charlie
     for (const page of [pageBravo, pageCharlie]) {
       await expect

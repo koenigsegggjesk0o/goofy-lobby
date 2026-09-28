@@ -426,3 +426,200 @@ describe('PeerConnectionManager — watchdog establishment', () => {
     }
   });
 });
+
+// ============================================================
+// Observabilitas pasangan terpilih (Task 11-b)
+// ============================================================
+
+describe('PeerConnectionManager — pasangan terpilih (selected pair)', () => {
+  /** Entri stats pasangan terpilih + kandidatnya (bentuk RTCStats ringkas). */
+  function pairEntries(localType: string, remoteType: string): Array<Record<string, unknown>> {
+    return [
+      { id: 'L1', type: 'local-candidate', candidateType: localType },
+      { id: 'R1', type: 'remote-candidate', candidateType: remoteType },
+      {
+        id: 'P1',
+        type: 'candidate-pair',
+        localCandidateId: 'L1',
+        remoteCandidateId: 'R1',
+        state: 'succeeded',
+        nominated: true,
+        selected: true,
+      },
+    ];
+  }
+
+  interface PairWire {
+    manager: PeerConnectionManager;
+    pc: FakeRTCPeerConnection;
+    pairs: Array<{ sessionId: string; localType: string; remoteType: string }>;
+  }
+
+  function makePairManager(resampleMs = 20): PairWire {
+    const pc = new FakeRTCPeerConnection();
+    const pairs: PairWire['pairs'] = [];
+    const manager = new PeerConnectionManager({
+      selfSessionId: sessionA.sessionId,
+      createPeerConnection: () => asPeerConnection(pc),
+      selectedPairResampleMs: resampleMs,
+      onOutgoingSignal: () => undefined,
+      onTrack: () => undefined,
+      onConnectionState: () => undefined,
+      onPosition: () => undefined,
+      onSelectedPair: (sessionId, pair) => {
+        pairs.push({ sessionId, localType: pair.localType, remoteType: pair.remoteType });
+      },
+    });
+    return { manager, pc, pairs };
+  }
+
+  it('memasuki connected → sampel segera → onSelectedPair dengan tipe pasangan', async () => {
+    const wire = makePairManager();
+    wire.manager.addPeer(sessionB, false);
+    wire.pc.statsEntries = pairEntries('host', 'host');
+    wire.pc.simulateState({ connectionState: 'connected', iceConnectionState: 'connected' });
+
+    await vi.waitFor(() => {
+      expect(wire.pairs).toHaveLength(1);
+    });
+    expect(wire.pairs[0]).toEqual({
+      sessionId: sessionB.sessionId,
+      localType: 'host',
+      remoteType: 'host',
+    });
+    wire.manager.closeAll();
+  });
+
+  it('double-event transisi yang sama (connection+ice) → SATU sampel per episode', async () => {
+    const wire = makePairManager();
+    wire.manager.addPeer(sessionB, false);
+    wire.pc.statsEntries = pairEntries('host', 'host');
+    // simulateState memicu connectionstatechange DAN iceconnectionstatechange.
+    wire.pc.simulateState({ connectionState: 'connected', iceConnectionState: 'connected' });
+    // Event tambahan tanpa perubahan state (event ganda nyata di browser).
+    wire.pc.fire('connectionstatechange', undefined);
+    wire.pc.fire('iceconnectionstatechange', undefined);
+
+    await vi.waitFor(() => {
+      expect(wire.pairs).toHaveLength(1);
+    });
+    // Tunggu jendela re-sample lewat — pasangan tidak berubah → tidak ada emisi baru.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(wire.pairs).toHaveLength(1);
+    wire.manager.closeAll();
+  });
+
+  it('re-sample tertunda menangkap perubahan pasangan (host → relay, nominasi terlambat)', async () => {
+    // Jendela re-sample panjang (200ms) — bebas race dengan assertion test:
+    // mutasi stats HARUS terjadi sebelum timer menyala.
+    const wire = makePairManager(200);
+    wire.manager.addPeer(sessionB, false);
+    wire.pc.statsEntries = pairEntries('host', 'host');
+    wire.pc.simulateState({ connectionState: 'connected', iceConnectionState: 'connected' });
+
+    // Sampel segera = rantai microtask murni — deterministik selesai setelah flush().
+    await flush();
+    expect(wire.pairs).toHaveLength(1);
+
+    // Pasangan berganti ke relay SETELAH connected menyala (nominasi TURN lambat).
+    wire.pc.statsEntries = pairEntries('relay', 'relay');
+    await vi.waitFor(
+      () => {
+        expect(wire.pairs).toHaveLength(2);
+      },
+      { timeout: 2_000 },
+    );
+    expect(wire.pairs[1]).toEqual({
+      sessionId: sessionB.sessionId,
+      localType: 'relay',
+      remoteType: 'relay',
+    });
+    wire.manager.closeAll();
+  });
+
+  it('sampul null di awal (belum ada pasangan) → emisi pertama saat re-sample menemukannya', async () => {
+    const wire = makePairManager(20);
+    wire.manager.addPeer(sessionB, false);
+    wire.pc.statsEntries = []; // belum ada pasangan sukses saat connected menyala
+    wire.pc.simulateState({ connectionState: 'connected', iceConnectionState: 'connected' });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(wire.pairs).toHaveLength(0); // null tidak dipancarkan
+
+    wire.pc.statsEntries = pairEntries('srflx', 'host');
+    await vi.waitFor(() => {
+      expect(wire.pairs).toHaveLength(1);
+    });
+    expect(wire.pairs[0]?.localType).toBe('srflx');
+    wire.manager.closeAll();
+  });
+
+  it('episode baru setelah blip disconnected → pasangan sama tidak di-emit ulang, pasangan berubah di-emit', async () => {
+    const wire = makePairManager(20);
+    wire.manager.addPeer(sessionB, false);
+    wire.pc.statsEntries = pairEntries('host', 'host');
+    wire.pc.simulateState({ connectionState: 'connected', iceConnectionState: 'connected' });
+    await vi.waitFor(() => {
+      expect(wire.pairs).toHaveLength(1);
+    });
+
+    // Blip singkat → episode berakhir; kembali connected dengan pasangan SAMA.
+    wire.pc.simulateState({ connectionState: 'disconnected', iceConnectionState: 'disconnected' });
+    wire.pc.simulateState({ connectionState: 'connected', iceConnectionState: 'connected' });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(wire.pairs).toHaveLength(1); // dedupe signature — tidak ada info baru
+
+    // Episode berikutnya dengan pasangan BERUBAH (mis. jatuh ke relay) → emit.
+    wire.pc.simulateState({ connectionState: 'disconnected', iceConnectionState: 'disconnected' });
+    wire.pc.statsEntries = pairEntries('relay', 'host');
+    wire.pc.simulateState({ connectionState: 'connected', iceConnectionState: 'connected' });
+    await vi.waitFor(() => {
+      expect(wire.pairs).toHaveLength(2);
+    });
+    expect(wire.pairs[1]?.localType).toBe('relay');
+    wire.manager.closeAll();
+  });
+
+  it('removePeer sebelum re-sample → timer dibersihkan, tidak ada emisi terlambat', async () => {
+    const wire = makePairManager(20);
+    wire.manager.addPeer(sessionB, false);
+    wire.pc.statsEntries = pairEntries('host', 'host');
+    wire.pc.simulateState({ connectionState: 'connected', iceConnectionState: 'connected' });
+    await vi.waitFor(() => {
+      expect(wire.pairs).toHaveLength(1);
+    });
+
+    wire.pc.statsEntries = pairEntries('relay', 'relay'); // akan terbaca bila re-sample jalan
+    wire.manager.removePeer(sessionB.sessionId);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(wire.pairs).toHaveLength(1); // re-sample tidak pernah menyala
+    wire.manager.closeAll();
+  });
+
+  it('getStats gagal → diam (tidak ada emisi, tidak melempar)', async () => {
+    const wire = makePairManager(20);
+    wire.manager.addPeer(sessionB, false);
+    wire.pc.statsFailure = true;
+    wire.pc.simulateState({ connectionState: 'connected', iceConnectionState: 'connected' });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(wire.pairs).toHaveLength(0);
+    wire.manager.closeAll();
+  });
+
+  it('tanpa callback onSelectedPair → getStats tidak pernah dipanggil (nol biaya)', async () => {
+    const pc = new FakeRTCPeerConnection();
+    const manager = new PeerConnectionManager({
+      selfSessionId: sessionA.sessionId,
+      createPeerConnection: () => asPeerConnection(pc),
+      onOutgoingSignal: () => undefined,
+      onTrack: () => undefined,
+      onConnectionState: () => undefined,
+      onPosition: () => undefined,
+    });
+    manager.addPeer(sessionB, false);
+    pc.statsEntries = pairEntries('host', 'host');
+    pc.simulateState({ connectionState: 'connected', iceConnectionState: 'connected' });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(pc.getStatsCalls).toBe(0);
+    manager.closeAll();
+  });
+});

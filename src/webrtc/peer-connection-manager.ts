@@ -1,5 +1,6 @@
 import { DataChannelSync } from './data-channel-sync';
 import { IceRestartHandler } from './ice-restart-handler';
+import { pickSelectedPair, type SelectedPairInfo, type StatsEntryLike } from './relay-stats';
 import {
   DATA_CHANNEL_LABEL,
   MAX_REMOTE_PEERS,
@@ -19,6 +20,16 @@ export type PeerConnectionFactory = (config: RTCConfiguration) => RTCPeerConnect
 
 export const defaultPeerConnectionFactory: PeerConnectionFactory = (config) =>
   new RTCPeerConnection(config);
+
+/**
+ * Jeda re-sample pasangan terpilih setelah 'connected' (Task 11-b):
+ * nominasi/pemilihan pasangan bisa selesai SETELAH event connected menyala
+ * (khususnya jalur TURN yang lambat). Satu kali saja per episode — terbatas,
+ * bukan polling. Di-inject lewat opsi selectedPairResampleMs untuk test.
+ */
+export const DEFAULT_SELECTED_PAIR_RESAMPLE_MS = 1_500;
+
+type Timer = ReturnType<typeof setTimeout>;
 
 interface ManagedPeer {
   session: SessionInfo;
@@ -41,6 +52,12 @@ interface ManagedPeer {
   pendingRemoteCandidates: RTCIceCandidateInit[];
   sync: DataChannelSync | null;
   restart: IceRestartHandler;
+  /** true selama episode 'connected' yang pasangan terpilihnya sudah disampling. */
+  connectedSampled: boolean;
+  /** Timer re-sample pasangan terpilih (dibersihkan saat peer ditutup). */
+  pairSampleTimer: Timer | null;
+  /** Signature pasangan terakhir yang dipancarkan — dedupe emisi berulang. */
+  lastPairSignature: string | null;
 }
 
 export interface PeerConnectionManagerOptions {
@@ -58,6 +75,19 @@ export interface PeerConnectionManagerOptions {
   onPosition: (sessionId: string, position: Position) => void;
   onInvalidPosition?: (sessionId: string, reason: string) => void;
   onError?: (sessionId: string, context: string, error?: unknown) => void;
+  /**
+   * Pasangan kandidat terpilih berhasil DIBACA (Task 11-b) — dipanggil saat
+   * peer memasuki 'connected' (sampel segera + satu re-sample tertunda) dan
+   * hanya bila infonya berubah sejak emisi terakhir. Sampul null TIDAK
+   * dipancarkan (belum ada informasi = tidak ada derau). getStats gagal
+   * juga diam — observabilitas tidak boleh menjatuhkan koneksi.
+   */
+  onSelectedPair?: (sessionId: string, pair: SelectedPairInfo) => void;
+  /**
+   * Jeda re-sample pasangan terpilih setelah 'connected' (default
+   * DEFAULT_SELECTED_PAIR_RESAMPLE_MS). Di-inject untuk test.
+   */
+  selectedPairResampleMs?: number;
   /**
    * Batas waktu pembentukan koneksi per peer (watchdog establishment) —
    * diteruskan ke IceRestartHandler setiap addPeer; hanya sisi inisiator
@@ -91,6 +121,8 @@ export class PeerConnectionManager {
   private readonly onPosition: PeerConnectionManagerOptions['onPosition'];
   private readonly onInvalidPosition?: PeerConnectionManagerOptions['onInvalidPosition'];
   private readonly onError?: PeerConnectionManagerOptions['onError'];
+  private readonly onSelectedPair?: PeerConnectionManagerOptions['onSelectedPair'];
+  private readonly selectedPairResampleMs: number;
   private readonly establishmentTimeoutMs: number | undefined;
   private readonly peers = new Map<string, ManagedPeer>();
   private localStream: MediaStream | null = null;
@@ -105,6 +137,9 @@ export class PeerConnectionManager {
     this.onPosition = options.onPosition;
     this.onInvalidPosition = options.onInvalidPosition;
     this.onError = options.onError;
+    this.onSelectedPair = options.onSelectedPair;
+    this.selectedPairResampleMs =
+      options.selectedPairResampleMs ?? DEFAULT_SELECTED_PAIR_RESAMPLE_MS;
     this.establishmentTimeoutMs = options.establishmentTimeoutMs;
   }
 
@@ -174,6 +209,9 @@ export class PeerConnectionManager {
       pendingLocalCandidates: [],
       pendingRemoteCandidates: [],
       sync: null,
+      connectedSampled: false,
+      pairSampleTimer: null,
+      lastPairSignature: null,
       restart: new IceRestartHandler({
         getConnectionState: () => pc.connectionState,
         getIceConnectionState: () => pc.iceConnectionState,
@@ -215,6 +253,10 @@ export class PeerConnectionManager {
       return;
     }
     this.peers.delete(sessionId);
+    if (peer.pairSampleTimer !== null) {
+      clearTimeout(peer.pairSampleTimer);
+      peer.pairSampleTimer = null;
+    }
     peer.restart.close();
     peer.sync?.close();
     try {
@@ -328,6 +370,7 @@ export class PeerConnectionManager {
     const notifyState = () => {
       this.onConnectionState(peer.session.sessionId, pc.connectionState, pc.iceConnectionState);
       peer.restart.observe();
+      this.sampleSelectedPairOnConnected(peer);
     };
     pc.addEventListener('connectionstatechange', notifyState);
     pc.addEventListener('iceconnectionstatechange', notifyState);
@@ -348,6 +391,78 @@ export class PeerConnectionManager {
       onPosition: (position) => this.onPosition(peer.session.sessionId, position),
       onInvalid: (reason) => this.onInvalidPosition?.(peer.session.sessionId, reason),
     });
+  }
+
+  // ============================================================
+  // Observabilitas pasangan terpilih (Task 11-b)
+  // ============================================================
+
+  /**
+   * Sampel pasangan terpilih tiap memasuki episode 'connected' (dedupe via
+   * flag episode — connectionstatechange + iceconnectionstatechange untuk
+   * transisi yang sama hanya memicu SATU rangkaian sampel). Episode berakhir
+   * saat state meninggalkan 'connected' (mis. blip 'disconnected' atau ICE
+   * restart) → masuk 'connected' lagi = episode baru = sampel baru.
+   * No-op total bila tidak ada callback onSelectedPair (nol biaya).
+   */
+  private sampleSelectedPairOnConnected(peer: ManagedPeer): void {
+    if (this.onSelectedPair === undefined) {
+      return;
+    }
+    if (peer.pc.connectionState !== 'connected') {
+      peer.connectedSampled = false;
+      return;
+    }
+    if (peer.connectedSampled) {
+      return;
+    }
+    peer.connectedSampled = true;
+    void this.readAndEmitSelectedPair(peer);
+    peer.pairSampleTimer = setTimeout(() => {
+      peer.pairSampleTimer = null;
+      // Hanya bila peer masih hidup di sini dan masih connected — timer
+      // bisa menyala setelah blip/restart; pairSampleTimer sudah dibersihkan
+      // removePeer, guard ini menutup sisa jalur.
+      if (
+        this.peers.get(peer.session.sessionId) === peer &&
+        peer.pc.connectionState === 'connected'
+      ) {
+        void this.readAndEmitSelectedPair(peer);
+      }
+    }, this.selectedPairResampleMs);
+  }
+
+  /** Baca stats → pancarkan hanya bila ada info BARU (signature berubah). */
+  private async readAndEmitSelectedPair(peer: ManagedPeer): Promise<void> {
+    const pair = await this.readSelectedPair(peer);
+    if (pair === null) {
+      return; // belum ada pasangan / getStats gagal — diam, jujur tanpa derau
+    }
+    const signature = `${pair.localType}/${pair.remoteType}/${pair.state ?? '-'}/${
+      pair.nominated ?? '-'
+    }/${pair.selected ?? '-'}`;
+    if (signature === peer.lastPairSignature) {
+      return;
+    }
+    peer.lastPairSignature = signature;
+    this.onSelectedPair?.(peer.session.sessionId, pair);
+  }
+
+  /**
+   * Baca pasangan terpilih dari getStats() — tidak pernah melempar.
+   * (RTCStatsReport di-spread lalu dilempar ke parser murni; cast tunggal
+   * karena lib.dom tidak memberi index signature pada RTCStats.)
+   */
+  private async readSelectedPair(peer: ManagedPeer): Promise<SelectedPairInfo | null> {
+    if (peer.pc.signalingState === 'closed') {
+      return null;
+    }
+    try {
+      const report = await peer.pc.getStats();
+      return pickSelectedPair([...report] as unknown as StatsEntryLike[]);
+    } catch {
+      return null;
+    }
   }
 
   private attachLocalTracks(peer: ManagedPeer): void {

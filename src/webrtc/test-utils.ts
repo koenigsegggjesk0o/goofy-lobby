@@ -104,6 +104,12 @@ export class FakeRTCPeerConnection extends FakeEventTarget {
   closed = false;
   /** Menahan setLocalDescription — dipakai untuk mensimulasikan glare. */
   gate: Promise<void> | null = null;
+  /** Entri getStats() yang dikembalikan (bentuk RTCStats ringkas). */
+  statsEntries: Array<Record<string, unknown>> = [];
+  /** true = getStats() melempar (simulasi kegagalan observabilitas). */
+  statsFailure = false;
+  /** Jumlah pemanggilan getStats() — pembuktian kemalasan sampling. */
+  getStatsCalls = 0;
 
   constructor(config?: RTCConfiguration) {
     super();
@@ -187,6 +193,19 @@ export class FakeRTCPeerConnection extends FakeEventTarget {
 
   restartIce(): void {
     this.restartIceCalls += 1;
+  }
+
+  /**
+   * getStats() versi fake — mengembalikan snapshot statsEntries (array baru
+   * supaya mutasi selanjutnya tidak memengaruhi report yang sudah dibaca).
+   * Dipakai PeerConnectionManager utk sampling pasangan terpilih (Task 11-b).
+   */
+  async getStats(): Promise<Array<Record<string, unknown>>> {
+    this.getStatsCalls += 1;
+    if (this.statsFailure) {
+      throw new Error('getStats gagal (simulasi)');
+    }
+    return [...this.statsEntries];
   }
 
   getSenders(): FakeRTCRtpSender[] {
