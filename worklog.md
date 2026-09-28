@@ -393,3 +393,26 @@ Stage Summary:
 - Bug observabilitas Task 11-b ditemukan & ditutup: selectedPair tak pernah terbaca di browser nyata selama ini (maplike spread) — kini terkunci regresi di 2 level (parser + manager) dan terbukti live.
 - Unit 649→654 (+5). Bloker tersisa: (1) access token Supabase kurang scope database_migrations_write — 7 migrasi (0007–0013: friends, chat, premium, soundboard) belum ter-apply ke cloud; minta user buat token baru di supabase.com/dashboard/account/tokens dengan scope tsb; (2) Sentry DSN opsional — spec di-skip jujur; (3) sebelum produksi: ganti captcha secret dashboard ke real key Turnstile.
 - Next: apply migrasi begitu token write diterima → lalu antrean Fase 2 sisa (audit signaling / test summarizeStressRuns) atau tunggu instruksi Fase 3 (UI) dari user.
+
+---
+
+Task ID: 14-c
+Agent: main (Z.ai Code)
+Task: Token Supabase write-scope dari user → apply 7 migrasi pending ke cloud + pulihkan kerusakan reset sandbox #5
+
+Work Log:
+
+- INSIDEN RESET #5 (terdeteksi saat memulai tugas): .env tersapu lagi (sisa 1 baris), /home/z/.goofy-creds lenyap, ~/.git-credentials lenyap, dev server mati. Yang SELAMAT: repo git utuh di a0e73f2 + worklog.md 395 baris (BUKTI proteksi worklog-tracked dari 13-b terbayar).
+- Pemulihan: dev server restart; PAT github dipulihkan ke credential store (token masih di konteks sesi); .env ditulis ulang penuh dari konteks percakapan (URL+anon+service_role+REF+Turnstile) dengan access token BARU dari user; backup lapis-2 dibuat ulang.
+- Token baru diverifikasi: Management API OK, project ACTIVE_HEALTHY. dry-run jalan → apply SUNGGUHAN: 7/7 migrasi SUKSES (0007 friends_blocks, 0008 rls, 0009 messages, 0010 rls, 0011 premium_status, 0012 soundboard bucket, 0013 storage rls) — kini 13/13 di server.
+- Verifikasi skema empiris (service_role REST): friendships HTTP 200, blocks 200, messages 200, kolom is_premium terbaca (false untuk 3 profil), bucket [voice-snippets, soundboard-sounds]. CATATAN: verifikasi pertama salah nama (friends/premium_status) — koreksi ke nama schema sebenarnya (friendships/is_premium).
+- Password QA di-reset ulang (3× HTTP 200) — password lama (random 14-b) ikut tersapu reset #5 dan tak mungkin dipulihkan (ter-hash).
+- PENGUATAN ANTI-RESET: scripts/dev/restore-qa-users.mjs BARU (git-tracked, tanpa secret — baca service_role dari .env, reset 3 password QA via admin API, tulis ulang baris TEST_USER_* di .env; idempoten). TERBUKTI end-to-end: 3× HTTP 200 + .env 9 entri TEST_USER terisi. Prosedur pasca-reset kini: tulis .env inti dari konteks → jalankan script ini → selesai.
+- Sanity: dev server 200 (18ms); e2e auth.spec.ts 5/5 LULUS dengan password baru (jalur penuh: harness → Supabase → captcha dummy → sesi).
+
+Stage Summary:
+
+- 13/13 MIGRASI CLOUD LENGKAP (migrasi terakhir yang menunggu sejak Task 12). Seluruh skema Fase 2 (friends+blocks+RLS+trigger anti-blokir, messages+RLS, premium lockdown kolom, soundboard bucket+RLS) kini hidup di project asli.
+- Bloker kredensial RESMI NOL: PAT github aktif, Supabase inti + write token aktif, Turnstile aktif, QA users aktif. Tersisa hanya opsional (Sentry DSN, Metered TURN) dan keputusan user (Fase 3 UI).
+- Reset #5 dipulihani penuh + mitigasi permanen untuk bagian QA users. Kelemahan tersisa: .env inti masih harus ditulis manual dari konteks sesi setelah reset (nilai secret tak boleh masuk git — batas ini jujur diterima).
+- Next: antrean bebas-kredensial (audit signaling data-channel-sync/mesh-room-controller, test langsung summarizeStressRuns) atau Fase 3 UI menunggu instruksi eksplisit user.
