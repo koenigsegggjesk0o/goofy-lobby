@@ -48,6 +48,7 @@ Aturan penting (keharusan Vite + keamanan):
 | `bun run test`                    | Vitest (unit test logic murni)                                                                                                              |
 | `bun run test:e2e`                | Playwright E2E lewat test-harness                                                                                                           |
 | `bun run test:e2e:stress`         | Runner stress e2e `--repeat-each=N` + distribusi durasi per spec                                                                            |
+| `bun run probe:webrtc`            | Probe diagnostik ICE + pasangan terpilih; `--runs N`; `--turn` = verifikasi relay-forced TURN Fase 2                                        |
 | `bun run format` / `format:check` | Prettier                                                                                                                                    |
 | `bun run doctor`                  | Triage env/dev-server/git/matriks spec e2e                                                                                                  |
 | `bun run verify`                  | Gerbang lengkap SATU perintah: typecheck → lint → format → unit → build → e2e (spec runnable saat ini) — exit code tidak bisa tertelan pipa |
@@ -268,6 +269,12 @@ supabase/
 - Malam implementasi: env nyata belum berisi TURN → `envStatus` harness
   menampilkan `turn: disabled` (jujur, bukan dipaksa tampak aktif).
   Live-verifikasi jalur `enabled` menunggu kredensial Metered dari user.
+- **Verifikasi end-to-end (Task 11-a)**: `bun run probe:webrtc --turn` —
+  relay-forced (`iceTransportPolicy "relay"`), memakai `parseTurnEnv`
+  yang sama dengan mesh (satu sumber kebenaran), membuktikan relay lewat
+  pasangan kandidat TERPILIH bertipe relay, exit code bermakna, nilai
+  kredensial tidak pernah dicetak. Runbook lengkap:
+  `docs/fase-2-turn-verifikasi.md`.
 
 ### Catatan desain mesh (F1.3, direvisi F1.6)
 

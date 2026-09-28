@@ -1,16 +1,37 @@
 /**
  * Probe diagnostik WebRTC antar-dua konteks browser (bukan produk).
  * Menjawab: kandidat ICE apa yang dihasilkan (host IP / mDNS .local /
- * srflx STUN), apakah dua konteks bisa tersambung langsung, dan BERAPA
- * LAMA establishment-nya (offer → connected) — dasar kalibrasi ambang
- * watchdog 8-c (15s) dan metodologi distribusi 8-f.
+ * srflx STUN / relay TURN), apakah dua konteks bisa tersambung langsung,
+ * BERAPA LAMA establishment-nya (offer → connected), dan PASANGAN KANDIDAT
+ * mana yang SUNGGUH dipakai (selected pair — bukti aktual, bukan sekadar
+ * terkumpul) — dasar kalibrasi ambang watchdog 8-c (15s) dan metodologi
+ * distribusi 8-f.
+ *
+ * MODE VERIFIKASI TURN (Fase 2, Task 11-a):
+ *   bun scripts/dev/probe-webrtc.mjs --turn
+ * Membaca VITE_TURN_URL/USERNAME/CREDENTIAL dari environment (bun memuat
+ * .env otomatis), memvalidasi lewat parseTurnEnv (SATU sumber kebenaran
+ * dengan jalur mesh — diimpor dari src/webrtc/turn-config.ts), lalu
+ * menjalankan probe relay-forced (iceTransportPolicy 'relay' di KEDUA
+ * peer): koneksi HANYA mungkin bila TURN sungguhan merelay. Terhubung =
+ * TURN terbukti end-to-end. Nilai kredensial TIDAK PERNAH dicetak.
  *
  * Jalankan:
  *   bun scripts/dev/probe-webrtc.mjs            # 1x
  *   bun scripts/dev/probe-webrtc.mjs --runs 10  # distribusi waktu 10x
  *   bun scripts/dev/probe-webrtc.mjs --no-stun  # tanpa STUN (host-only)
+ *   bun scripts/dev/probe-webrtc.mjs --turn     # verifikasi relay TURN
+ *
+ * Exit code: 0 = sukses sesuai mode (mode --turn: SEMUA run tersambung
+ * lewat relay; mode normal: minimal satu run tersambung). 1 = env TURN
+ * kosong/invalid saat --turn, atau sambungan gagal sesuai ketentuan mode.
  */
 import { chromium } from '@playwright/test';
+import { pathToFileURL } from 'node:url';
+// SATU sumber kebenaran validasi TURN — modul yang sama dipakai mesh asli
+// (8-d); bun men-transpile TS saat import, tanpa duplikasi logika.
+import { parseTurnEnv, resolveIceServers } from '../../src/webrtc/turn-config.ts';
+import { pickSelectedPair } from '../../src/webrtc/relay-stats.ts';
 
 const STUN = process.argv.includes('--no-stun') ? [] : [{ urls: 'stun:stun.l.google.com:19302' }];
 
@@ -32,16 +53,19 @@ const RUNS = Math.max(
 const CONNECT_TIMEOUT_MS = 20_000;
 const POLL_INTERVAL_MS = 500;
 
-async function makePeer(page) {
-  await page.evaluate((iceServers) => {
-    const pc = new RTCPeerConnection({ iceServers });
-    pc.createDataChannel('probe');
-    window.__pc = pc;
-    window.__cands = [];
-    pc.onicecandidate = (event) => {
-      if (event.candidate !== null) window.__cands.push(event.candidate.candidate);
-    };
-  }, STUN);
+async function makePeer(page, iceServers, iceTransportPolicy) {
+  await page.evaluate(
+    ({ iceServers, iceTransportPolicy }) => {
+      const pc = new RTCPeerConnection({ iceServers, iceTransportPolicy });
+      pc.createDataChannel('probe');
+      window.__pc = pc;
+      window.__cands = [];
+      pc.onicecandidate = (event) => {
+        if (event.candidate !== null) window.__cands.push(event.candidate.candidate);
+      };
+    },
+    { iceServers, iceTransportPolicy },
+  );
 }
 
 async function gatherCandidates(page) {
@@ -69,12 +93,33 @@ function candidateKind(raw) {
   return 'lain';
 }
 
+/** Kumpulkan entri getStats() mentah (pengumpulan generik — parsing murni dilakukan di sisi Node oleh relay-stats.ts). */
+async function collectStats(page) {
+  return page.evaluate(async () => {
+    const report = await window.__pc.getStats();
+    return [...report].map(([, stats]) => ({ ...stats }));
+  });
+}
+
+function describePair(pair) {
+  if (pair === null) return '— (belum ada pasangan terpilih)';
+  const flags = [
+    `state=${pair.state ?? '?'}`,
+    `nominated=${pair.nominated ?? '?'}`,
+    pair.selected !== null ? `selected=${pair.selected}` : null,
+  ]
+    .filter((f) => f !== null)
+    .join(' ');
+  return `A=${pair.localType} B=${pair.remoteType} (${flags})`;
+}
+
 /**
  * Satu siklus penuh di konteks BARU (isolasi antar-run): dua peer, offer/
  * answer, tukar kandidat (trickle penuh), lalu poll sampai connected.
- * Mengembalikan {connected, ms, kinds} — ms = offer → connected.
+ * Mengembalikan {connected, ms, kinds, pairA, pairB} — ms = offer → connected;
+ * pairA/pairB = pasangan kandidat terpilih (bukti jalur aktual).
  */
-async function runOnce(browser, runLabel) {
+async function runOnce(browser, runLabel, config) {
   const contextA = await browser.newContext();
   const contextB = await browser.newContext();
   const pageA = await contextA.newPage();
@@ -83,8 +128,8 @@ async function runOnce(browser, runLabel) {
     await page.goto('about:blank');
   }
   try {
-    await makePeer(pageA);
-    await makePeer(pageB);
+    await makePeer(pageA, config.iceServers, config.iceTransportPolicy);
+    await makePeer(pageB, config.iceServers, config.iceTransportPolicy);
 
     const t0 = Date.now();
     const offer = await pageA.evaluate(async () => {
@@ -171,7 +216,13 @@ async function runOnce(browser, runLabel) {
     console.log(
       `  [${runLabel}] gathering A=${doneA ? 'ok' : 'timeout'} B=${doneB ? 'ok' : 'timeout'} — final A=${finalA} B=${finalB} ${connected ? 'TERHUBUNG ✅' : 'GAGAL ❌'}`,
     );
-    return { connected, ms, msAfterExchange, gatherTimedOut, kinds };
+    // Pasangan kandidat terpilih — dikumpulkan APA PUN hasil akhirnya
+    // (kegagalan pun diagnostik: pasangan tidak pernah selected).
+    const [statsA, statsB] = [await collectStats(pageA), await collectStats(pageB)];
+    const pairA = pickSelectedPair(statsA);
+    const pairB = pickSelectedPair(statsB);
+    console.log(`  [${runLabel}] pasangan terpilih: ${describePair(pairA)}`);
+    return { connected, ms, msAfterExchange, gatherTimedOut, kinds, pairA, pairB };
   } finally {
     await contextA.close();
     await contextB.close();
@@ -186,49 +237,109 @@ function summarize(times) {
   return { min: sorted[0], median, mean, max: sorted[n - 1], n };
 }
 
-console.log(`iceServers: ${JSON.stringify(STUN)} — runs: ${RUNS}`);
-const browser = await chromium.launch();
-const results = [];
-try {
-  for (let i = 1; i <= RUNS; i += 1) {
-    results.push(await runOnce(browser, `run ${i}/${RUNS}`));
-  }
-} finally {
-  await browser.close();
+/** Eksekusi runner HANYA bila dijalankan langsung sebagai CLI — import modul (mis. verifikasi agregasi) bebas efek samping. */
+const isMain = import.meta.url === pathToFileURL(process.argv[1] ?? '').href;
+
+if (isMain) {
+  await main();
 }
 
-const connectedRuns = results.filter((r) => r.connected);
-const times = connectedRuns.map((r) => r.ms);
-const timesAfterExchange = connectedRuns.map((r) => r.msAfterExchange);
-const gatherTimeouts = results.filter((r) => r.gatherTimedOut).length;
-console.log('\n== ringkasan ==');
-console.log(`connected: ${connectedRuns.length}/${results.length}`);
-if (times.length > 0) {
-  const s = summarize(times);
-  const ice = summarize(timesAfterExchange);
-  console.log(
-    `total offer→connected (termasuk tunggu full-gather non-trickle): n=${s.n} min=${s.min}ms median=${s.median}ms mean=${s.mean.toFixed(0)}ms max=${s.max}ms`,
-  );
-  console.log(
-    `ICE pasca-tukar-kandidat (bandingkan dgn watchdog 8-c): n=${ice.n} min=${ice.min}ms median=${ice.median}ms mean=${ice.mean.toFixed(0)}ms max=${ice.max}ms`,
-  );
-  if (ice.max > 15_000) {
-    console.log('  ⚠ ICE pasca-tukar melebihi ambang watchdog 8-c (15s) — restart akan terpicu.');
-  } else {
-    console.log('  ✓ seluruh ICE pasca-tukar di bawah ambang watchdog 8-c (15s).');
-  }
-  if (gatherTimeouts > 0) {
+async function main() {
+  const TURN_MODE = process.argv.includes('--turn');
+  let iceServers = STUN;
+  let iceTransportPolicy = 'all';
+
+  if (TURN_MODE) {
+    // Sumber env: process.env (bun memuat .env otomatis). Hanya tiga var
+    // TURN yang dibaca; nilai TIDAK PERNAH dicetak — hanya status/alasan.
+    const source = {
+      VITE_TURN_URL: process.env.VITE_TURN_URL,
+      VITE_TURN_USERNAME: process.env.VITE_TURN_USERNAME,
+      VITE_TURN_CREDENTIAL: process.env.VITE_TURN_CREDENTIAL,
+    };
+    const turn = parseTurnEnv(source);
+    if (turn.status === 'disabled') {
+      console.log(
+        'TURN: disabled — env VITE_TURN_URL/USERNAME/CREDENTIAL kosong, tidak ada yang bisa diverifikasi.\n' +
+          'Isi ketiganya di .env (lihat .env.example — grup TURN Fase 2), lalu jalankan ulang.',
+      );
+      process.exit(1);
+    }
+    if (turn.status === 'invalid') {
+      console.log('TURN: invalid — konfigurasi tidak sah, verifikasi dibatalkan:');
+      for (const reason of turn.reasons) console.log(`  - ${reason}`);
+      process.exit(1);
+    }
+    iceServers = resolveIceServers(source).iceServers;
+    iceTransportPolicy = 'relay';
     console.log(
-      `  catatan: ${gatherTimeouts}/${results.length} run menunggu full-gather sampai timeout (STUN lambat) — ` +
-        `total time terpengaruh; mesh asli F1.6 trickle penuh (kandidat host mengalir seketika).`,
+      'TURN: enabled — probe RELAY-FORCED (iceTransportPolicy "relay" di kedua peer).\n' +
+        'Koneksi hanya mungkin bila TURN sungguhan merelay. Nilai kredensial tidak dicetak.',
     );
   }
-  const allKinds = results.flatMap((r) => r.kinds);
-  const counts = allKinds.reduce((acc, kind) => {
-    acc[kind] = (acc[kind] ?? 0) + 1;
-    return acc;
-  }, {});
-  console.log(`kandidat: ${JSON.stringify(counts)}`);
-} else {
-  console.log('tidak ada run yang tersambung — periksa kandidat di atas.');
+
+  console.log(
+    `iceServers: ${TURN_MODE ? 'STUN default + TURN (nilai tidak dicetak)' : JSON.stringify(STUN)} — transport: ${iceTransportPolicy} — runs: ${RUNS}`,
+  );
+  const browser = await chromium.launch();
+  const results = [];
+  try {
+    for (let i = 1; i <= RUNS; i += 1) {
+      results.push(await runOnce(browser, `run ${i}/${RUNS}`, { iceServers, iceTransportPolicy }));
+    }
+  } finally {
+    await browser.close();
+  }
+
+  const connectedRuns = results.filter((r) => r.connected);
+  const times = connectedRuns.map((r) => r.ms);
+  const timesAfterExchange = connectedRuns.map((r) => r.msAfterExchange);
+  const gatherTimeouts = results.filter((r) => r.gatherTimedOut).length;
+  console.log('\n== ringkasan ==');
+  console.log(`connected: ${connectedRuns.length}/${results.length}`);
+  if (times.length > 0) {
+    const s = summarize(times);
+    const ice = summarize(timesAfterExchange);
+    console.log(
+      `total offer→connected (termasuk tunggu full-gather non-trickle): n=${s.n} min=${s.min}ms median=${s.median}ms mean=${s.mean.toFixed(0)}ms max=${s.max}ms`,
+    );
+    console.log(
+      `ICE pasca-tukar-kandidat (bandingkan dgn watchdog 8-c): n=${ice.n} min=${ice.min}ms median=${ice.median}ms mean=${ice.mean.toFixed(0)}ms max=${ice.max}ms`,
+    );
+    if (ice.max > 15_000) {
+      console.log('  ⚠ ICE pasca-tukar melebihi ambang watchdog 8-c (15s) — restart akan terpicu.');
+    } else {
+      console.log('  ✓ seluruh ICE pasca-tukar di bawah ambang watchdog 8-c (15s).');
+    }
+    if (gatherTimeouts > 0) {
+      console.log(
+        `  catatan: ${gatherTimeouts}/${results.length} run menunggu full-gather sampai timeout (STUN lambat) — ` +
+          `total time terpengaruh; mesh asli F1.6 trickle penuh (kandidat host mengalir seketika).`,
+      );
+    }
+    const allKinds = results.flatMap((r) => r.kinds);
+    const counts = allKinds.reduce((acc, kind) => {
+      acc[kind] = (acc[kind] ?? 0) + 1;
+      return acc;
+    }, {});
+    console.log(`kandidat: ${JSON.stringify(counts)}`);
+  } else {
+    console.log('tidak ada run yang tersambung — periksa kandidat di atas.');
+  }
+
+  if (TURN_MODE) {
+    const relayPairs = results.filter((r) => r.pairA?.localType === 'relay');
+    if (connectedRuns.length === results.length && relayPairs.length === results.length) {
+      console.log(
+        `\nTURN RELAY TERVERIFIKASI ✅ — ${connectedRuns.length}/${results.length} run tersambung dgn pasangan terpilih relay (A=${relayPairs[0].pairA.localType}).`,
+      );
+      process.exit(0);
+    }
+    console.log(
+      `\nTURN TIDAK terverifikasi ❌ — ${connectedRuns.length}/${results.length} run tersambung; pasangan relay: ${relayPairs.length}/${results.length}.`,
+    );
+    process.exit(1);
+  }
+
+  process.exit(connectedRuns.length > 0 ? 0 : 1);
 }

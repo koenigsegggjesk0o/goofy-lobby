@@ -1,0 +1,112 @@
+/**
+ * Parser pasangan kandidat TERPILIH dari laporan RTCPeerConnection.getStats()
+ * — murni, tanpa import, tanpa efek samping (aman dipakai Node maupun
+ * browser).
+ *
+ * Menjawab pertanyaan verifikasi Fase 2 yang LEBIH KUAT daripada sekadar
+ * "kandidat relay terkumpul": pasangan mana yang SUNGGUH dipakai koneksi
+ * aktif? Kandidat relay yang terkumpul tidak menjamin relaying terjadi —
+ * pasangan terpilih (selected candidate pair) adalah bukti aktual.
+ *
+ * Bentuk entri mengikuti struktur RTCStats (Chrome/Chromium dan Firefox):
+ * - `local-candidate` / `remote-candidate` — punya `id` + `candidateType`
+ *   (host | srflx | prflx | relay);
+ * - `candidate-pair` — punya `localCandidateId` / `remoteCandidateId`,
+ *   `state`, `nominated`, dan (Chrome modern) `selected`.
+ *
+ * Prioritas pemilihan pasangan:
+ * 1. `selected === true` (penanda eksplisit Chrome — paling kuat);
+ * 2. `state === 'succeeded'` DAN `nominated === true` (jalur standar
+ *    Firefox/w3c — pasangan yang dinominasikan dan berhasil);
+ * 3. `state === 'succeeded'` pertama (fallback terakhir — diagnosa saja).
+ *
+ * Tidak ada pasangan yang memenuhi → null (pemanggil melaporkan apa adanya).
+ */
+
+/** Bentuk ringkas entri RTCStats yang dibaca parser (structural typing). */
+export interface StatsEntryLike {
+  id?: string;
+  type: string;
+  [key: string]: unknown;
+}
+
+/** Tipe kandidat ICE standar; 'unknown' = nilai tak dikenal/tidak hadir. */
+export type IceCandidateType = 'host' | 'srflx' | 'prflx' | 'relay' | 'unknown';
+
+/** Hasil pembacaan pasangan terpilih. */
+export interface SelectedPairInfo {
+  localType: IceCandidateType;
+  remoteType: IceCandidateType;
+  state: string | null;
+  nominated: boolean | null;
+  /** `selected` eksplisit (Chrome); null bila browser tidak menyediakan. */
+  selected: boolean | null;
+  localCandidateId: string | null;
+  remoteCandidateId: string | null;
+}
+
+function candidateTypeOf(entry: StatsEntryLike): IceCandidateType {
+  const value = entry.candidateType;
+  if (value === 'host' || value === 'srflx' || value === 'prflx' || value === 'relay') {
+    return value;
+  }
+  return 'unknown';
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function asBoolean(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
+
+/**
+ * Pilih pasangan kandidat terpilih dari daftar entri stats (hasil
+ * `[...report]` atau bentuk array serupa). Mengembalikan null bila tidak
+ * ada pasangan yang bisa dipilih.
+ */
+export function pickSelectedPair(entries: readonly StatsEntryLike[]): SelectedPairInfo | null {
+  const candidates = new Map<string, StatsEntryLike>();
+  for (const entry of entries) {
+    if (entry.type === 'local-candidate' || entry.type === 'remote-candidate') {
+      const id = asString(entry.id);
+      if (id !== null) candidates.set(id, entry);
+    }
+  }
+
+  const pairs = entries.filter((entry) => entry.type === 'candidate-pair');
+  if (pairs.length === 0) return null;
+
+  const explicit = pairs.find((pair) => pair.selected === true);
+  const nominatedSucceeded = pairs.find(
+    (pair) => pair.state === 'succeeded' && pair.nominated === true,
+  );
+  const anySucceeded = pairs.find((pair) => pair.state === 'succeeded');
+  const pair = explicit ?? nominatedSucceeded ?? anySucceeded;
+  if (pair === undefined) return null;
+
+  const localCandidateId = asString(pair.localCandidateId);
+  const remoteCandidateId = asString(pair.remoteCandidateId);
+  const local = localCandidateId !== null ? candidates.get(localCandidateId) : undefined;
+  const remote = remoteCandidateId !== null ? candidates.get(remoteCandidateId) : undefined;
+
+  return {
+    localType: local !== undefined ? candidateTypeOf(local) : 'unknown',
+    remoteType: remote !== undefined ? candidateTypeOf(remote) : 'unknown',
+    state: asString(pair.state),
+    nominated: asBoolean(pair.nominated),
+    selected: asBoolean(pair.selected),
+    localCandidateId,
+    remoteCandidateId,
+  };
+}
+
+/**
+ * true bila pasangan terpilih menunjukkan lokal MELALUI relay — bukti TURN
+ * aktif pada jalur koneksi nyata. null (belum ada pasangan) tidak dihitung
+ * sebagai bukti apa pun.
+ */
+export function isSelectedPairRelay(pair: SelectedPairInfo): boolean {
+  return pair.localType === 'relay';
+}
