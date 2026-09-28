@@ -27,6 +27,13 @@ export class SignalingClient {
   private readonly onInvalid?: (reason: string) => void;
   private readonly onSendError?: (response: string) => void;
   private active = false;
+  /**
+   * Handler hanya boleh terpasang SEKALI per channel — RealtimeChannel tidak
+   * punya off(), jadi bind() ulang pasca unbind() tanpa guard ini akan
+   * mendaftarkan handler kedua dan setiap pesan diproses GANDA (bug tertangkap
+   * test 11-c). unbind() menetralkan lewat `active`, bukan melepas handler.
+   */
+  private handlerAttached = false;
 
   constructor(options: SignalingClientOptions) {
     this.channel = options.channel;
@@ -64,12 +71,16 @@ export class SignalingClient {
     this.onMessage(message);
   };
 
-  /** Mulai mendengarkan broadcast signaling (idempoten). */
+  /** Mulai mendengarkan broadcast signaling (idempoten, aman dipanggil ulang). */
   bind(): void {
     if (this.active) {
       return;
     }
     this.active = true;
+    if (this.handlerAttached) {
+      return; // handler masih terpasang dari bind() sebelumnya — cukup aktifkan lagi
+    }
+    this.handlerAttached = true;
     this.channel.on('broadcast', { event: SIGNAL_EVENT }, (payload) =>
       this.handleBroadcast(payload),
     );

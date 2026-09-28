@@ -342,6 +342,18 @@ export class FakeRealtimeChannel {
     }
   }
 
+  /**
+   * Menyerahkan envelope broadcast MENTAH seolah dari jaringan — dipakai untuk
+   * menguji ketangguhan SignalingClient terhadap envelope rusak (bukan objek /
+   * null), kasus yang tidak bisa dibentuk lewat deliverSignal (yang selalu
+   * membungkus payload dalam envelope valid).
+   */
+  deliverRawSignal(envelope: unknown): void {
+    for (const handler of [...(this.broadcastHandlers.get('signal') ?? [])]) {
+      handler(envelope);
+    }
+  }
+
   simulatePresence(session: SessionInfo): void {
     this.presence.set(session.sessionId, session);
     this.fireSync();
