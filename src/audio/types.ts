@@ -23,14 +23,20 @@ export const PANNER_ROLLOFF_FACTOR = 1;
 // Adaptasi bitrate Opus (sender)
 // ============================================================
 
-/** Tier bitrate saat koneksi sehat — Opus 50 kbps cukup untuk musik ringan. */
-export const BITRATE_HIGH_BPS = 50_000;
+/**
+ * Tier bitrate saat koneksi sehat — 24 kbps: batas ATAS rentang main
+ * prompt ("Opus 16–24 kbps"); cukup jernih untuk suara bicara.
+ */
+export const BITRATE_HIGH_BPS = 24_000;
 
-/** Tier setelah tenggang disconnected habis — suara tetap jernih. */
-export const BITRATE_MEDIUM_BPS = 24_000;
+/** Tier setelah tenggang disconnected habis — tengah rentang 16–24 kbps. */
+export const BITRATE_MEDIUM_BPS = 20_000;
 
-/** Tier darurat saat koneksi buruk — prioritas keberlanjutan suara. */
-export const BITRATE_LOW_BPS = 12_000;
+/**
+ * Tier darurat saat koneksi buruk — 16 kbps: batas BAWAH rentang main
+ * prompt; prioritas keberlanjutan suara di atas kejernihan.
+ */
+export const BITRATE_LOW_BPS = 16_000;
 
 export type BitrateTier = 'high' | 'medium' | 'low';
 
@@ -195,9 +201,24 @@ export function applySpatialOrientation(
   return 'none';
 }
 
-/** Posisi dunia yang sudah dikunci batas — dipakai lapisan audio sebagai pertahanan kedua. */
+/**
+ * Posisi dunia yang sudah dikunci batas — dipakai lapisan audio sebagai
+ * pertahanan kedua.
+ *
+ * Tahan-NaN (Task 13-b): `clampPosition` (webrtc) MEMBIARKAN NaN lolos —
+ * `Math.min`/`Math.max` tidak menetralkan NaN. Jalur remote aman (payload
+ * posisi divalidasi `z.number().finite()` di DataChannelSync), tetapi jalur
+ * LOKAL (posisi listener/peer dari host — harness, UI Fase 3) tidak melewati
+ * Zod apa pun. Buktinya empiris (probe Chromium, 13-b): menulis nilai
+ * non-finite ke AudioParam.value MELEMPAR TypeError keras ("The provided
+ * float value is non-finite") — bug host jadi crash, bukan sekadar nilai
+ * aneh. Komponen non-finite diganti 0 (pusat dunia; netral secara jarak,
+ * dan bug host terdengar jelas alih-alih meruntuhkan graf audio).
+ */
 export function sanitizePosition(position: Position): Position {
-  return clampPosition(position);
+  const clamped = clampPosition(position);
+  const finite = (n: number): number => (Number.isFinite(n) ? n : 0);
+  return { x: finite(clamped.x), y: finite(clamped.y) };
 }
 
 // ============================================================

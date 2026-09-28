@@ -264,6 +264,51 @@ describe('SpatialAudioEngine — volume & mute', () => {
     engine.setMuted(false);
     expect(gain.gain.value).toBe(0.8);
   });
+
+  it('tahan-NaN (13-b): volume NaN dinetralkan ke 0 (gain tidak pernah NaN)', () => {
+    const { engine, ctx } = makeEngine();
+    const gain = masterGainOf(ctx);
+    engine.setMasterVolume(0.4);
+
+    engine.setMasterVolume(Number.NaN);
+
+    expect(gain.gain.value).toBe(0);
+  });
+
+  it('tahan-NaN (13-b): unmute setelah volume NaN tetap 0 (penyimpanan ikut dinetralkan)', () => {
+    const { engine, ctx } = makeEngine();
+    const gain = masterGainOf(ctx);
+
+    engine.setMasterVolume(Number.NaN);
+    engine.setMuted(true);
+    engine.setMuted(false);
+
+    expect(gain.gain.value).toBe(0);
+  });
+
+  it('tahan-NaN (13-b): posisi peer NaN → komponen NaN jadi 0 di panner (jalur lokal tanpa Zod)', () => {
+    const { engine, ctx } = makeEngine();
+    engine.addPeerVoice('peer-1', fakeMediaStream());
+
+    engine.setPeerPosition('peer-1', { x: Number.NaN, y: 7 });
+
+    const { panner } = voiceOf(ctx, 0);
+    expect(panner.positionX?.value).toBe(0);
+    expect(panner.positionZ?.value).toBe(-7);
+  });
+
+  it('tahan-NaN (13-b): posisi listener NaN → 0 di AudioListener (update dipanggil host, tanpa Zod)', () => {
+    const { engine, ctx } = makeEngine();
+
+    engine.listener.update({ x: Number.NaN, y: 3 }, Number.NaN);
+
+    expect(ctx.listener.positionX?.value).toBe(0);
+    expect(ctx.listener.positionZ?.value).toBe(-3);
+    // Orientasi TIDAK pernah ditulis (yaw NaN dilewati) — AudioParam fake
+    // masih bernilai awal 0, bukan hasil orientationFromYaw apa pun.
+    expect(ctx.listener.forwardX?.value).toBe(0);
+    expect(ctx.listener.forwardZ?.value).toBe(0);
+  });
 });
 
 describe('SpatialAudioEngine — lifecycle context', () => {

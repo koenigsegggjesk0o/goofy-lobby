@@ -59,7 +59,7 @@ Aturan penting (keharusan Vite + keamanan):
 ## Testing
 
 - **Vitest** — unit test untuk logic murni (Zod schema, SDP munging,
-  kalkulasi posisi, cache). Tidak butuh browser. 617 test, 45 file
+  kalkulasi posisi, cache). Tidak butuh browser. 649 test, 46 file
   (termasuk `src/db/migrations.test.ts` — migrasi dieksekusi di PostgreSQL
   asli via PGlite/WASM + RLS/grant/trigger diuji empiris).
 - **Playwright** — E2E via `test-harness/` (halaman HTML polos yang memuat
@@ -199,9 +199,15 @@ src/
                    posisi bisa datang sebelum suara; clamp ulang)
                  audio-listener-sync (posisi + orientasi telinga
                    lokal dari posisi dunia + yaw, fallback legacy)
-                 bitrate-adaptation (tier Opus 50k/24k/12k dari state
-                   koneksi; tenggang disconnected 5s; dedupe;
-                   retry saat setParameters gagal)
+                 bitrate-adaptation (DUA sumber keputusan — Task 13-b:
+                   tier Opus 24k/20k/16k SEMUA dalam rentang main prompt
+                   "Opus 16–24 kbps"; state koneksi + SAMPEL STATS
+                   jaringan via observeStats/getStats; tenggang
+                   disconnected 5s; dedupe; retry saat setParameters gagal)
+                 bitrate-decision (13-b BARU: keputusan tier MURNI dari
+                   median jendela sampel loss+jitter — histeresis alami
+                   anti-spike; median via percentile type-7 src/lib/stats;
+                   validasi keras RangeError untuk sampel korup)
   profile/       ✅ F1.5:
                  types (skema Zod display name/warna/path snippet,
                    like-type Supabase storage+postgrest, adapter
@@ -422,13 +428,42 @@ supabase/
 - **Urutan bebas**: posisi peer boleh datang sebelum track suara — disimpan
   lalu diterapkan saat `addPeerVoice` (paket posisi ~15Hz biasanya mendahului
   koneksi audio).
-- **Adaptasi bitrate reaktif**: `BitrateAdaptation` tidak berlangganan apa
-  pun — host memanggil `observe(sessionId, connectionState)` dari event
-  `peer-state`. `connected` → 50 kbps, `disconnected` 5 detik → 24 kbps,
-  `failed` → 12 kbps, pulih → naik lagi. `setParameters` ditulis hanya saat
-  tier berubah (Chrome tidak suka spam parameter) dan diulang bila gagal.
-  Sender baru (mikrofon dipasang belakangan) dilayani lewat
-  `applyCurrentTier`.
+- **Adaptasi bitrate — DUA sumber keputusan (Task 13-b, direvisi dari F1.4
+  yang hanya state-based)**: main prompt mensyaratkan "Opus 16–24 kbps,
+  adaptif berbasis getStats() (packet loss, jitter)". (1) STATE koneksi:
+  `BitrateAdaptation` tetap reaktif — host memanggil
+  `observe(sessionId, connectionState)` dari event `peer-state`:
+  `connected` → 24 kbps, `disconnected` 5 detik → 20 kbps, `failed` →
+  16 kbps, pulih → naik lagi. (2) STATS jaringan (medan utama):
+  host memanggil `observeStats(sessionId, {fractionLost, jitterMs})`
+  dari `getStats()` — keputusan tier oleh `decideBitrateTier` MURNI dari
+  MEDIAN jendela 5 sampel (median kebal spike satu-sampel = histeresis
+  alami; median dihitung `percentile(…, 0.5)` type-7 dari src/lib/stats —
+  satu sumber kebenaran). Ambang awal (kebijakan bisa disetel, menunggu
+  telemetri): loss ≥ 8% → low; loss ≥ 3% ATAU jitter ≥ 30 ms → medium;
+  di bawah itu → high. `setParameters` ditulis hanya saat tier berubah
+  (Chrome tidak suka spam parameter) dan diulang bila gagal. Sender baru
+  (mikrofon dipasang belakangan) dilayani lewat `applyCurrentTier`.
+  Sampel korup ditolak keras (`RangeError` dari validasi murni) →
+  `onError('observe-stats')`, jendela tak tercemar. Nilai tier lama F1.4
+  (50k/24k/12k) BERAKHIR di 13-b — semuanya kini dalam rentang 16–24 kbps
+  sesuai main prompt. Integrasi host (polling getStats berkala →
+  observeStats) menunggu perakitan mesh+audio di Fase 3 — modul siap.
+- **Tahan-NaN lapisan audio (Task 13-b)**: audit empiris menemukan NaN
+  lolos dari `clampPosition` (Math.min/max tidak menetralkan NaN) dan
+  bisa ditulis ke AudioParam dari jalur LOKAL (listener/posisi/volume
+  dari host — harness/UI Fase 3 — yang tidak melewati Zod; jalur remote
+  sudah dijamin finite oleh `z.number().finite()` di DataChannelSync).
+  Probe Chromium (13-b): penulisan nilai non-finite ke AudioParam.value
+  MELEMPAR `TypeError` keras ("The provided float value is
+  non-finite") — terbukti pada gain maupun panner.positionX — jadi bug
+  host satu kali NaN cukup untuk meruntuhkan graf audio. Perbaikan:
+  `sanitizePosition` mengganti komponen non-finite dengan 0 (netral
+  jarak, bug host terdengar jelas), `setMasterVolume` menetralkan NaN
+  ke 0 di penyimpanan (unmute tidak menulis ulang gain NaN), dan
+  `setYaw` MELEWATI yaw non-finite sepenuhnya (tidak ada substitusi
+  netral orientasi — orientasi valid terakhir dipertahankan, tanpa
+  lompatan audible).
 
 ### Catatan desain profil & snippet suara (F1.5)
 

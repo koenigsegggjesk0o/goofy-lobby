@@ -97,6 +97,64 @@ describe('AudioListenerSync — jalur modern', () => {
   });
 });
 
+describe('AudioListenerSync — tahan-NaN (13-b)', () => {
+  it('setYaw NaN dilewati: orientasi + lastYaw terakhir yang valid dipertahankan', () => {
+    const listener = new FakeAudioListener();
+    const sync = new AudioListenerSync(listener);
+    sync.update({ x: 1, y: 1 }, Math.PI / 2); // menghadap timur
+
+    sync.setYaw(Number.NaN);
+
+    expect(sync.getLastYaw()).toBe(Math.PI / 2);
+    expect(listener.forwardX?.value).toBeCloseTo(1); // masih timur
+  });
+
+  it('setYaw ±Infinity juga dilewati', () => {
+    const listener = new FakeAudioListener();
+    const sync = new AudioListenerSync(listener);
+    sync.setYaw(0.5);
+
+    sync.setYaw(Number.POSITIVE_INFINITY);
+    sync.setYaw(Number.NEGATIVE_INFINITY);
+
+    expect(sync.getLastYaw()).toBe(0.5);
+    expect(listener.forwardX?.value).toBeCloseTo(Math.sin(0.5));
+  });
+
+  it('update dengan yaw NaN tetap menerapkan posisi (orientasi dipertahankan)', () => {
+    const listener = new FakeAudioListener();
+    const sync = new AudioListenerSync(listener);
+    sync.update({ x: 1, y: 1 }, 1);
+
+    sync.update({ x: 5, y: 6 }, Number.NaN);
+
+    expect(listener.positionX?.value).toBe(5);
+    expect(listener.positionZ?.value).toBe(-6);
+    expect(sync.getLastYaw()).toBe(1);
+  });
+
+  it('update dengan posisi NaN → komponen NaN jadi 0 (via sanitizePosition tahan-NaN)', () => {
+    const listener = new FakeAudioListener();
+    const sync = new AudioListenerSync(listener);
+
+    sync.update({ x: Number.NaN, y: 2 });
+
+    expect(listener.positionX?.value).toBe(0);
+    expect(listener.positionZ?.value).toBe(-2);
+  });
+
+  it('yaw valid pertama tetap diterapkan normal setelah beberapa sampah dilewati', () => {
+    const listener = new FakeAudioListener();
+    const sync = new AudioListenerSync(listener);
+    sync.setYaw(Number.NaN);
+
+    sync.setYaw(Math.PI);
+
+    expect(sync.getLastYaw()).toBe(Math.PI);
+    expect(listener.forwardZ?.value).toBeCloseTo(1); // selatan
+  });
+});
+
 describe('AudioListenerSync — jalur legacy (browser lama)', () => {
   it('memakai setPosition + setOrientation', () => {
     const listener = new FakeAudioListener({ legacy: true });

@@ -36,7 +36,7 @@ describe('BitrateAdaptation — penerapan tier', () => {
     adaptation.observe('peer-1', 'connected');
 
     expect(sender.setParametersCalls).toHaveLength(1);
-    expect(sender.setParametersCalls[0]?.encodings?.[0]?.maxBitrate).toBe(50_000);
+    expect(sender.setParametersCalls[0]?.encodings?.[0]?.maxBitrate).toBe(24_000);
     expect(adaptation.currentTier('peer-1')).toBe('high');
   });
 
@@ -79,7 +79,7 @@ describe('BitrateAdaptation — penerapan tier', () => {
     adaptation.observe('peer-1', 'connected');
 
     expect(sender.setParametersCalls[0]?.encodings).toHaveLength(1);
-    expect(sender.setParametersCalls[0]?.encodings?.[0]?.maxBitrate).toBe(50_000);
+    expect(sender.setParametersCalls[0]?.encodings?.[0]?.maxBitrate).toBe(24_000);
   });
 
   it('encodings yang sudah ada hanya elemen pertama yang diubah', () => {
@@ -95,7 +95,7 @@ describe('BitrateAdaptation — penerapan tier', () => {
     adaptation.observe('peer-1', 'connected');
 
     const encodings = sender.setParametersCalls[0]?.encodings;
-    expect(encodings?.[0]?.maxBitrate).toBe(50_000);
+    expect(encodings?.[0]?.maxBitrate).toBe(24_000);
     expect(encodings?.[1]?.maxBitrate).toBe(999);
   });
 
@@ -131,7 +131,7 @@ describe('BitrateAdaptation — mesin state + tenggang (timer palsu)', () => {
 
     vi.advanceTimersByTime(1);
     expect(sender.setParametersCalls).toHaveLength(2);
-    expect(sender.setParametersCalls[1]?.encodings?.[0]?.maxBitrate).toBe(24_000);
+    expect(sender.setParametersCalls[1]?.encodings?.[0]?.maxBitrate).toBe(20_000);
     expect(adaptation.currentTier('peer-1')).toBe('medium');
   });
 
@@ -157,7 +157,7 @@ describe('BitrateAdaptation — mesin state + tenggang (timer palsu)', () => {
     adaptation.observe('peer-1', 'failed');
 
     expect(sender.setParametersCalls).toHaveLength(1);
-    expect(sender.setParametersCalls[0]?.encodings?.[0]?.maxBitrate).toBe(12_000);
+    expect(sender.setParametersCalls[0]?.encodings?.[0]?.maxBitrate).toBe(16_000);
     expect(adaptation.currentTier('peer-1')).toBe('low');
   });
 
@@ -197,7 +197,7 @@ describe('BitrateAdaptation — mesin state + tenggang (timer palsu)', () => {
     adaptation.observe('peer-1', 'connected');
 
     expect(sender.setParametersCalls).toHaveLength(3);
-    expect(sender.setParametersCalls[2]?.encodings?.[0]?.maxBitrate).toBe(50_000);
+    expect(sender.setParametersCalls[2]?.encodings?.[0]?.maxBitrate).toBe(24_000);
   });
 
   it('close(sessionId) menghapus state + tenggang', () => {
@@ -236,7 +236,7 @@ describe('BitrateAdaptation — mesin state + tenggang (timer palsu)', () => {
     vi.advanceTimersByTime(1_000);
 
     expect(sender.setParametersCalls).toHaveLength(1);
-    expect(sender.setParametersCalls[0]?.encodings?.[0]?.maxBitrate).toBe(24_000);
+    expect(sender.setParametersCalls[0]?.encodings?.[0]?.maxBitrate).toBe(20_000);
   });
 });
 
@@ -275,7 +275,7 @@ describe('BitrateAdaptation — kegagalan & penerapan ulang', () => {
     await settle();
 
     expect(second.setParametersCalls).toHaveLength(1);
-    expect(second.setParametersCalls[0]?.encodings?.[0]?.maxBitrate).toBe(50_000);
+    expect(second.setParametersCalls[0]?.encodings?.[0]?.maxBitrate).toBe(24_000);
   });
 
   it('applyCurrentTier tanpa tier tersimpan adalah no-op', () => {

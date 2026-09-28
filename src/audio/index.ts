@@ -5,6 +5,15 @@
 export { AudioListenerSync, type AudioListenerSyncOptions } from './audio-listener-sync';
 export { BitrateAdaptation, type BitrateAdaptationOptions } from './bitrate-adaptation';
 export {
+  assertValidStatsSample,
+  decideBitrateTier,
+  MIN_STATS_SAMPLES,
+  STATS_JITTER_MEDIUM_MS,
+  STATS_LOSS_LOW,
+  STATS_LOSS_MEDIUM,
+  type BitrateStatsSample,
+} from './bitrate-decision';
+export {
   SpatialAudioEngine,
   defaultAudioContextFactory,
   type AudioContextFactory,

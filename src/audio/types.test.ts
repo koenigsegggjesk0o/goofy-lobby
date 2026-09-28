@@ -58,6 +58,23 @@ describe('audio/types — sanitizePosition (pertahanan kedua)', () => {
   it('posisi dalam batas tidak berubah nilai', () => {
     expect(sanitizePosition({ x: -12.5, y: 900 })).toEqual({ x: -12.5, y: 900 });
   });
+
+  it('tahan-NaN (13-b): komponen NaN diganti 0, komponen sehat dipertahankan', () => {
+    expect(sanitizePosition({ x: Number.NaN, y: 5 })).toEqual({ x: 0, y: 5 });
+    expect(sanitizePosition({ x: -3, y: Number.NaN })).toEqual({ x: -3, y: 0 });
+    expect(sanitizePosition({ x: Number.NaN, y: Number.NaN })).toEqual({ x: 0, y: 0 });
+  });
+
+  it('tahan-NaN (13-b): ±Infinity tetap di-clamp ke batas (bukan 0)', () => {
+    expect(sanitizePosition({ x: Number.POSITIVE_INFINITY, y: 2 })).toEqual({
+      x: WORLD_BOUND,
+      y: 2,
+    });
+    expect(sanitizePosition({ x: 1, y: Number.NEGATIVE_INFINITY })).toEqual({
+      x: 1,
+      y: -WORLD_BOUND,
+    });
+  });
 });
 
 describe('audio/types — applySpatialPosition', () => {
@@ -122,6 +139,11 @@ describe('audio/types — tier bitrate', () => {
   it('nilai default berurutan high > medium > low', () => {
     expect(DEFAULT_BITRATE_TIERS.high).toBeGreaterThan(DEFAULT_BITRATE_TIERS.medium);
     expect(DEFAULT_BITRATE_TIERS.medium).toBeGreaterThan(DEFAULT_BITRATE_TIERS.low);
-    expect(DEFAULT_BITRATE_TIERS).toEqual({ high: 50_000, medium: 24_000, low: 12_000 });
+    expect(DEFAULT_BITRATE_TIERS).toEqual({ high: 24_000, medium: 20_000, low: 16_000 });
+  });
+
+  it('seluruh tier berada dalam rentang main prompt Opus 16–24 kbps (Task 13-b)', () => {
+    expect(DEFAULT_BITRATE_TIERS.low).toBeGreaterThanOrEqual(16_000);
+    expect(DEFAULT_BITRATE_TIERS.high).toBeLessThanOrEqual(24_000);
   });
 });

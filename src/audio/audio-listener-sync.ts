@@ -65,8 +65,21 @@ export class AudioListenerSync {
     }
   }
 
-  /** Memperbarui orientasi saja (posisi tidak disentuh). */
+  /**
+   * Memperbarui orientasi saja (posisi tidak disentuh).
+   *
+   * Tahan-NaN (Task 13-b): yaw non-finite (NaN/±Infinity dari bug host)
+   * DILEWATI sepenuhnya — tidak ada substitusi netral yang berarti untuk
+   * orientasi (snap ke utara = lompatan audible), jadi orientasi terakhir
+   * yang valid dipertahankan dan `lastYaw` tidak dicemari. Di Chromium
+   * penulisan AudioParam non-finite melempar TypeError keras (probe
+   * empiris 13-b) — skip juga mencegah crash itu. Posisi tetap diproses
+   * normal oleh `update()` lewat `sanitizePosition` yang tahan-NaN.
+   */
   setYaw(yawRadians: number): void {
+    if (!Number.isFinite(yawRadians)) {
+      return;
+    }
     this.lastYaw = yawRadians;
     const result = applySpatialOrientation(this.listener, orientationFromYaw(yawRadians));
     this.onApplyResult?.('orientation', result);

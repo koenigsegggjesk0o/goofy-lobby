@@ -167,10 +167,18 @@ export class SpatialAudioEngine {
     applySpatialPosition(voice.panner, xyz.x, xyz.y, xyz.z);
   }
 
-  /** Volume master 0..1 (di-clamp); tidak berlaku saat muted. */
+  /**
+   * Volume master 0..1 (di-clamp); tidak berlaku saat muted.
+   *
+   * Tahan-NaN (Task 13-b): volume NaN (bug aritmetika host, mis. pembagian
+   * nol di slider) dinetralkan ke 0 — di Chromium penulisan AudioParam
+   * non-finite MELEMPAR TypeError keras (terbukti probe empiris 13-b),
+   * dan gain NaN yang tersimpan akan terus ditulis ulang oleh
+   * setMuted(false) sehingga bug satu kali jadi crash berulang.
+   */
   setMasterVolume(volume: number): void {
     this.assertNotDisposed();
-    this.masterVolume = Math.min(1, Math.max(0, volume));
+    this.masterVolume = Number.isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 0;
     if (!this.muted) {
       this.masterGain.gain.value = this.masterVolume;
     }

@@ -1,4 +1,9 @@
 import {
+  assertValidStatsSample,
+  decideBitrateTier,
+  type BitrateStatsSample,
+} from './bitrate-decision';
+import {
   DEFAULT_BITRATE_TIERS,
   DISCONNECTED_GRACE_MS,
   type AdaptiveRtpParameters,
@@ -19,36 +24,52 @@ export interface BitrateAdaptationOptions {
   tiers?: Partial<Record<BitrateTier, number>>;
   /** Tenggang disconnected sebelum turun ke medium (default 5 detik). */
   disconnectedGraceMs?: number;
-  /** Laporan kegagalan setParameters (tidak fatal — tier akan di-reset agar retry). */
+  /** Ukuran jendela sampel stats per peer (default 5). */
+  statsWindow?: number;
+  /** Laporan kegagalan setParameters + sampel stats korup (tidak fatal). */
   onError?: (sessionId: string, context: string, error: unknown) => void;
 }
 
 interface SessionAdaptation {
   tier: BitrateTier | null;
   graceTimer: Timer | null;
+  /** Jendela sampel stats terbaru (terlama dibuang — memori berbatas). */
+  statsWindow: BitrateStatsSample[];
 }
 
 /**
- * Adaptasi bitrate Opus per peer berdasar state koneksi:
+ * Adaptasi bitrate Opus per peer.
  *
- *   connected              → high (50 kbps)
- *   disconnected 5 detik   → medium (24 kbps) — kecuali sedang low
- *   failed                 → low (12 kbps)
- *   pulih ke connected     → high kembali
+ * DUA sumber keputusan (main prompt: adaptif berbasis getStats):
+ * 1. STATE koneksi (event connectionState dari host):
+ *      connected              → high (24 kbps)
+ *      disconnected 5 detik   → medium (20 kbps) — kecuali sedang low
+ *      failed                 → low (16 kbps)
+ *      pulih ke connected     → high kembali
+ * 2. SAMPEL STATS jaringan (observeStats — packet loss + jitter, medan
+ *    utama main prompt): median jendela 5 sampel memutuskan tier lewat
+ *    decideBitrateTier (murni, teruji unit). Sinyal state dan sampel
+ *    stats berlomba — pemanggilan terakhir menang; jendela kecil membuat
+ *    data basi cepat menua. Host hanya memanggil observeStats untuk peer
+ *    terhubung (kontrak host, didokumentasikan di bitrate-decision.ts).
  *
  * - hanya menyentuh sender audio (sender.track?.kind === 'audio');
  * - setParameters dipanggil hanya saat tier BERUBAH (dedupe — Chrome tidak
  *   suka parameter yang di-set berulang kali);
  * - kegagalan setParameters me-reset tier sehingga observe berikutnya retry;
+ * - sampel stats korup ditolak keras oleh validasi murni → dilaporkan lewat
+ *   onError('observe-stats') TANPA masuk jendela (tidak mencemari median);
  * - grace timer 5 detik selaras dengan tenggang disconnected IceRestartHandler.
  *
  * Sumber state: event connectionState dari PeerConnectionManager/host —
- * kelas ini sendiri tidak berlangganan ke apa pun (murni reaktif via observe).
+ * kelas ini sendiri tidak berlangganan ke apa pun (murni reaktif via observe
+ * / observeStats).
  */
 export class BitrateAdaptation {
   private readonly getSenders: BitrateAdaptationOptions['getSenders'];
   private readonly tiers: Readonly<Record<BitrateTier, number>>;
   private readonly graceMs: number;
+  private readonly statsWindowMax: number;
   private readonly onError?: BitrateAdaptationOptions['onError'];
   private readonly sessions = new Map<string, SessionAdaptation>();
 
@@ -56,6 +77,7 @@ export class BitrateAdaptation {
     this.getSenders = options.getSenders;
     this.tiers = { ...DEFAULT_BITRATE_TIERS, ...options.tiers };
     this.graceMs = options.disconnectedGraceMs ?? DISCONNECTED_GRACE_MS;
+    this.statsWindowMax = Math.max(1, Math.floor(options.statsWindow ?? 5));
     this.onError = options.onError;
   }
 
@@ -103,6 +125,31 @@ export class BitrateAdaptation {
     }
   }
 
+  /**
+   * Satu sampel statistik jaringan baru (main prompt: adaptif berbasis
+   * getStats — packet loss + jitter). Sampel masuk jendela peer (terlama
+   * dibuang), lalu tier diputuskan dari median jendela; null (sampel belum
+   * cukup) = tidak ada perubahan. Sampel korup → onError('observe-stats'),
+   * jendela tidak tercemar, tier tidak berubah.
+   */
+  observeStats(sessionId: string, sample: BitrateStatsSample): void {
+    try {
+      assertValidStatsSample(sample);
+    } catch (error) {
+      this.onError?.(sessionId, 'observe-stats', error);
+      return;
+    }
+    const session = this.ensureSession(sessionId);
+    session.statsWindow.push(sample);
+    while (session.statsWindow.length > this.statsWindowMax) {
+      session.statsWindow.shift();
+    }
+    const tier = decideBitrateTier(session.statsWindow);
+    if (tier !== null) {
+      this.setTier(sessionId, tier);
+    }
+  }
+
   /** Menghentikan timer + menghapus state satu peer (dipanggil saat peer-left). */
   close(sessionId: string): void {
     this.clearGrace(sessionId);
@@ -123,7 +170,7 @@ export class BitrateAdaptation {
   private ensureSession(sessionId: string): SessionAdaptation {
     let session = this.sessions.get(sessionId);
     if (session === undefined) {
-      session = { tier: null, graceTimer: null };
+      session = { tier: null, graceTimer: null, statsWindow: [] };
       this.sessions.set(sessionId, session);
     }
     return session;
