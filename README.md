@@ -59,7 +59,7 @@ Aturan penting (keharusan Vite + keamanan):
 ## Testing
 
 - **Vitest** — unit test untuk logic murni (Zod schema, SDP munging,
-  kalkulasi posisi, cache). Tidak butuh browser. 597 test, 44 file
+  kalkulasi posisi, cache). Tidak butuh browser. 617 test, 45 file
   (termasuk `src/db/migrations.test.ts` — migrasi dieksekusi di PostgreSQL
   asli via PGlite/WASM + RLS/grant/trigger diuji empiris).
 - **Playwright** — E2E via `test-harness/` (halaman HTML polos yang memuat
@@ -291,11 +291,15 @@ scripts/
                  establishment dual-metrik: total offer→connected dan ICE
                  pasca-tukar-kandidat; --runs N untuk distribusi — kalibrasi
                  ambang watchdog 8-c)
+                 ✅ 13-a: distribusi PERSENTIL min/p50/p75/p90/p95/p99/max
+                 + mean + stdev (interpolasi type 7) via src/lib/stats.ts —
+                 SATU sumber kebenaran bersama e2e-stress, teruji unit
                  ✅ 9-b: doctor.mjs (triage .env per grup NAMA saja + dev
                  server + git push + matriks spec e2e runnable)
                  ✅ 8-f PREP: e2e-stress.mjs (bun run test:e2e:stress —
                  playwright --repeat-each=N + agregasi durasi per spec
-                 min/median/mean/max; metodologi distribusi 8-f)
+                 persentil p50–p99 + mean/stdev via src/lib/stats.ts;
+                 metodologi distribusi 8-f)
 supabase/
   migrations/    ✅ F1.2 (profiles + RLS + bucket voice-snippets + grants)
                   ✅ F1.5 (0006: voice_snippet_path + policy select authenticated)
@@ -350,6 +354,15 @@ supabase/
   berakhir — peer yang flap cepat tidak menumpuk timer pending (invariant
   ≤ 1 timer hidup per peer; dibuktikan mutation test: tanpa fix = 12 panggilan
   getStats, dengan fix = 7).
+- **Distribusi persentil pengukuran durasi (Task 13-a)**: statistik
+  distribusi (min/p50/p75/p90/p95/p99/max + mean + stdev sampel) dipindah
+  ke modul murni `src/lib/stats.ts` (interpolasi "type 7" — default
+  numpy/R; p50 ≡ median, p0 = min, p1 = max; stdev sampel n−1, n=1 → 0;
+  masukan kosong/tak-hingga → RangeError — data korup ditolak keras).
+  Sebelumnya `probe-webrtc` dan `e2e-stress` memelihara DUPLIKAT logika
+  min/median/mean/max tanpa test; kini keduanya mengimpor modul yang sama
+  (teruji unit 19 test) dan outputnya kaya persentil — dasar kalibrasi
+  watchdog 8-c dan metodologi distribusi 8-f dengan bentuk yang konsisten.
 
 ### Catatan desain mesh (F1.3, direvisi F1.6)
 

@@ -1,10 +1,13 @@
 /**
  * Runner stress e2e (PREP 8-f): playwright test --repeat-each=N dengan
  * reporter JSON ke file sementara, lalu agregasi DURASI per spec
- * (min/median/mean/max dari run yang lulus) — distribusi waktu, bukan
- * sekadar hitungan lulus/gagal. Melengkapi dual-metrik probe-webrtc (ICE
- * level, tanpa Supabase): ini mengukur siklus PENUH signin→mesh→leave di
- * atas signaling Supabase Realtime sungguhan.
+ * (min/p50/p75/p90/p95/p99/max + mean + stdev dari run yang lulus) —
+ * distribusi waktu, bukan sekadar hitungan lulus/gagal. Melengkapi
+ * dual-metrik probe-webrtc (ICE level, tanpa Supabase): ini mengukur
+ * siklus PENUH signin→mesh→leave di atas signaling Supabase Realtime
+ * sungguhan. Statistik dihitung src/lib/stats.ts — modul bersama yang
+ * sama dengan probe-webrtc (Task 13-a; teruji unit, SATU sumber
+ * kebenaran).
  *
  * Jalankan:
  *   bun run test:e2e:stress                       # filter 'mesh', 10x
@@ -20,6 +23,9 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+// SATU sumber kebenaran statistik distribusi — modul yang sama dipakai
+// probe-webrtc (Task 13-a); bun men-transpile TS saat import.
+import { summarizeNumbers } from '../../src/lib/stats.ts';
 
 const runsArg = process.argv.find((arg) => arg.startsWith('--runs='));
 const runsFlagIndex = process.argv.indexOf('--runs');
@@ -46,14 +52,6 @@ const FILTERS = filters.length > 0 ? filters : ['mesh'];
 
 function sec(ms) {
   return `${(ms / 1000).toFixed(1)}s`;
-}
-
-function stats(durations) {
-  const sorted = [...durations].sort((a, b) => a - b);
-  const n = sorted.length;
-  const median = n % 2 === 1 ? sorted[(n - 1) / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2;
-  const mean = sorted.reduce((sum, t) => sum + t, 0) / n;
-  return { n, min: sorted[0], median, mean, max: sorted[n - 1] };
 }
 
 /**
@@ -92,7 +90,7 @@ export function summarizeStressRuns(report) {
 
   const specs = [...bySpec.values()].map((entry) => ({
     ...entry,
-    durationStats: entry.durations.length > 0 ? stats(entry.durations) : null,
+    durationStats: entry.durations.length > 0 ? summarizeNumbers(entry.durations) : null,
   }));
   return {
     specs,
@@ -144,8 +142,9 @@ async function main() {
       console.log(`\n${spec.title}`);
       if (spec.durationStats !== null) {
         const s = spec.durationStats;
+        console.log(`  lulus ${spec.passed}/${total} — durasi lulus: n=${s.n}`);
         console.log(
-          `  lulus ${spec.passed}/${total} — durasi lulus: n=${s.n} min=${sec(s.min)} median=${sec(s.median)} mean=${sec(s.mean)} max=${sec(s.max)}`,
+          `    min=${sec(s.min)} p50=${sec(s.p50)} p75=${sec(s.p75)} p90=${sec(s.p90)} p95=${sec(s.p95)} p99=${sec(s.p99)} max=${sec(s.max)} | mean=${sec(s.mean)} stdev=${sec(s.stdev)}`,
         );
       } else {
         console.log(

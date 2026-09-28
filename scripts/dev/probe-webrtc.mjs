@@ -7,6 +7,11 @@
  * terkumpul) — dasar kalibrasi ambang watchdog 8-c (15s) dan metodologi
  * distribusi 8-f.
  *
+ * DISTRIBUSI PERSENTIL (Task 13-a): --runs N ≥ 2 merangkum
+ * min/p50/p75/p90/p95/p99/max + mean + stdev sampel lewat modul bersama
+ * src/lib/stats.ts (interpolasi type 7 — SATU sumber kebenaran dengan
+ * e2e-stress; teruji unit di src/lib/stats.test.ts).
+ *
  * MODE VERIFIKASI TURN (Fase 2, Task 11-a):
  *   bun scripts/dev/probe-webrtc.mjs --turn
  * Membaca VITE_TURN_URL/USERNAME/CREDENTIAL dari environment (bun memuat
@@ -32,6 +37,7 @@ import { pathToFileURL } from 'node:url';
 // (8-d); bun men-transpile TS saat import, tanpa duplikasi logika.
 import { parseTurnEnv, resolveIceServers } from '../../src/webrtc/turn-config.ts';
 import { pickSelectedPair } from '../../src/webrtc/relay-stats.ts';
+import { summarizeNumbers } from '../../src/lib/stats.ts';
 
 const STUN = process.argv.includes('--no-stun') ? [] : [{ urls: 'stun:stun.l.google.com:19302' }];
 
@@ -229,12 +235,18 @@ async function runOnce(browser, runLabel, config) {
   }
 }
 
-function summarize(times) {
-  const sorted = [...times].sort((a, b) => a - b);
-  const n = sorted.length;
-  const median = n % 2 === 1 ? sorted[(n - 1) / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2;
-  const mean = sorted.reduce((sum, t) => sum + t, 0) / n;
-  return { min: sorted[0], median, mean, max: sorted[n - 1], n };
+/** Format ms dibulatkan (interpolasi persentil menghasilkan pecahan). */
+function formatMs(value) {
+  return `${Math.round(value)}ms`;
+}
+
+/** Cetak distribusi dua baris: persentil dulu, lalu tendensi sentral + sebaran. */
+function printDistribution(label, s) {
+  console.log(`${label}: n=${s.n}`);
+  console.log(
+    `  min=${formatMs(s.min)} p50=${formatMs(s.p50)} p75=${formatMs(s.p75)} p90=${formatMs(s.p90)} p95=${formatMs(s.p95)} p99=${formatMs(s.p99)} max=${formatMs(s.max)}`,
+  );
+  console.log(`  mean=${formatMs(s.mean)} stdev=${formatMs(s.stdev)}`);
 }
 
 /** Eksekusi runner HANYA bila dijalankan langsung sebagai CLI — import modul (mis. verifikasi agregasi) bebas efek samping. */
@@ -298,18 +310,21 @@ async function main() {
   console.log('\n== ringkasan ==');
   console.log(`connected: ${connectedRuns.length}/${results.length}`);
   if (times.length > 0) {
-    const s = summarize(times);
-    const ice = summarize(timesAfterExchange);
-    console.log(
-      `total offer→connected (termasuk tunggu full-gather non-trickle): n=${s.n} min=${s.min}ms median=${s.median}ms mean=${s.mean.toFixed(0)}ms max=${s.max}ms`,
-    );
-    console.log(
-      `ICE pasca-tukar-kandidat (bandingkan dgn watchdog 8-c): n=${ice.n} min=${ice.min}ms median=${ice.median}ms mean=${ice.mean.toFixed(0)}ms max=${ice.max}ms`,
-    );
+    const s = summarizeNumbers(times);
+    const ice = summarizeNumbers(timesAfterExchange);
+    printDistribution('total offer→connected (termasuk tunggu full-gather non-trickle)', s);
+    printDistribution('ICE pasca-tukar-kandidat (bandingkan dgn watchdog 8-c 15s)', ice);
     if (ice.max > 15_000) {
       console.log('  ⚠ ICE pasca-tukar melebihi ambang watchdog 8-c (15s) — restart akan terpicu.');
     } else {
-      console.log('  ✓ seluruh ICE pasca-tukar di bawah ambang watchdog 8-c (15s).');
+      console.log(
+        `  ✓ seluruh ICE pasca-tukar di bawah ambang watchdog 8-c (15s) — p95=${formatMs(ice.p95)} (5% koneksi terlambatnya ≥ nilai ini).`,
+      );
+    }
+    if (ice.n < 10) {
+      console.log(
+        '  catatan: n < 10 — persentil masih kasar; --runs ≥ 20 disarankan untuk distribusi yang stabil.',
+      );
     }
     if (gatherTimeouts > 0) {
       console.log(
