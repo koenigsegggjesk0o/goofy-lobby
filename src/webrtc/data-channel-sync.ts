@@ -44,6 +44,18 @@ export class DataChannelSync {
     this.intervalMs = options.sendIntervalMs ?? POSITION_SEND_INTERVAL_MS;
     this.maxBufferedAmount = options.maxBufferedAmount ?? POSITION_MAX_BUFFERED_AMOUNT;
     this.now = options.now ?? Date.now;
+    // Kontrak opsi numerik (konvensi stats.ts): nilai tak masuk akal
+    // GAGAL KERAS saat konstruksi, bukan diam-diam mengubah perilaku
+    // (interval NaN membuat throttle selalu lolos; batas negatif selalu
+    // memblokir backpressure).
+    if (!Number.isFinite(this.intervalMs) || this.intervalMs <= 0) {
+      throw new RangeError(`sendIntervalMs harus angka > 0 (dapat: ${options.sendIntervalMs})`);
+    }
+    if (!Number.isFinite(this.maxBufferedAmount) || this.maxBufferedAmount < 0) {
+      throw new RangeError(
+        `maxBufferedAmount harus angka >= 0 (dapat: ${options.maxBufferedAmount})`,
+      );
+    }
     dc.addEventListener('message', this.handleMessage);
   }
 
@@ -93,7 +105,17 @@ export class DataChannelSync {
       return false;
     }
     this.lastSentAt = timestamp;
-    this.dc.send(JSON.stringify(position));
+    try {
+      this.dc.send(JSON.stringify(position));
+    } catch {
+      // Batas API eksternal: JSON.stringify (BigInt/sirkular dari
+      // pemanggil nakal saat runtime) dan dc.send (kontrak RTCDataChannel
+      // melempar InvalidStateError) — kegagalan best-effort posisi TIDAK
+      // boleh menjatuhkan loop broadcast pemanggil: tanpa try ini, satu
+      // peer yang melempar membatalkan pengiriman ke peer sisanya
+      // (dibuktikan test regresi 15-a di level PeerConnectionManager).
+      return false;
+    }
     return true;
   }
 

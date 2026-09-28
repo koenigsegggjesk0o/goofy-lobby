@@ -46,6 +46,8 @@ export default tseslint.config(
         clearTimeout: 'readonly',
         setInterval: 'readonly',
         clearInterval: 'readonly',
+        // Web Crypto global (crypto.randomUUID) — resmi di Bun & Node 20+.
+        crypto: 'readonly',
       },
     },
   },

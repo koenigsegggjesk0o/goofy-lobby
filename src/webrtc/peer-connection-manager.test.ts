@@ -749,3 +749,45 @@ describe('PeerConnectionManager — ketangguhan buffer & timer (Task 11-d)', () 
     manager.closeAll();
   });
 });
+
+describe('PeerConnectionManager — ketangguhan broadcast posisi (15-a)', () => {
+  it('channel peer pertama melempar saat send → peer berikutnya TETAP menerima posisi', () => {
+    const pcs = [new FakeRTCPeerConnection(), new FakeRTCPeerConnection()];
+    let idx = 0;
+    const manager = new PeerConnectionManager({
+      selfSessionId: sessionA.sessionId,
+      createPeerConnection: () => {
+        const pc = pcs[idx];
+        idx += 1;
+        if (pc === undefined) throw new Error('factory pc habis');
+        return asPeerConnection(pc);
+      },
+      onOutgoingSignal: () => undefined,
+      onTrack: () => undefined,
+      onConnectionState: () => undefined,
+      onPosition: () => undefined,
+    });
+
+    // Dua peer, manager sebagai INISIATOR keduanya → createDataChannel
+    // dipanggil manager sendiri (attachDataChannel jalur internal).
+    manager.addPeer(makeSession({ sessionId: 'peer-bad-01' }), false);
+    manager.addPeer(makeSession({ sessionId: 'peer-good-2' }), false);
+
+    const [badPc, goodPc] = pcs;
+    const badChannel = badPc?.dataChannels[0];
+    const goodChannel = goodPc?.dataChannels[0];
+    if (badChannel === undefined || goodChannel === undefined) {
+      throw new Error('data channel tidak tercipta oleh addPeer impolite');
+    }
+    // Sabotase: channel peer pertama melempar (kontrak InvalidStateError).
+    badChannel.send = () => {
+      throw new DOMException('channel sedang menutup', 'InvalidStateError');
+    };
+
+    // SEBELUM 15-a: lemparan ini menjatuhkan loop → goodChannel kosong.
+    expect(() => manager.sendPositionToAll({ x: 7, y: -7 })).not.toThrow();
+    expect(goodChannel.sent).toEqual([JSON.stringify({ x: 7, y: -7 })]);
+
+    manager.closeAll();
+  });
+});

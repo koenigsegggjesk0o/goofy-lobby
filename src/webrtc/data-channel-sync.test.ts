@@ -93,3 +93,66 @@ describe('DataChannelSync', () => {
     expect(removeSpy).toHaveBeenCalledWith('message', expect.any(Function));
   });
 });
+describe('DataChannelSync — ketangguhan batas API (15-a)', () => {
+  it('dc.send() melempar → sendPosition mengembalikan false, eksepsi tidak lolos', () => {
+    const dc = new FakeRTCDataChannel('position');
+    const sync = new DataChannelSync(asDataChannel(dc), { onPosition: () => undefined });
+    // Kontrak RTCDataChannel.send: melempar InvalidStateError bila channel
+    // menutup — guard readyState sempat lolos lalu channel mati di tangan
+    // pemiliknya. Tanpa try/catch, eksepsi ini menjatuhkan pemanggil loop.
+    dc.send = () => {
+      throw new DOMException('channel sedang menutup', 'InvalidStateError');
+    };
+    expect(() => sync.sendPosition({ x: 1, y: 2 })).not.toThrow();
+    expect(sync.sendPosition({ x: 1, y: 2 })).toBe(false);
+    expect(dc.sent).toHaveLength(0);
+  });
+
+  it('posisi runtime eksotis (BigInt) → stringify melempar → false tanpa lempar keluar', () => {
+    const dc = new FakeRTCDataChannel('position');
+    const sync = new DataChannelSync(asDataChannel(dc), { onPosition: () => undefined });
+    // Pemanggil nakal melewati tipe saat runtime: JSON.stringify(BigInt)
+    // melempar TypeError. Kontrak best-effort: false, bukan crash.
+    const nakal = { x: 1n, y: 2n } as unknown as { x: number; y: number };
+    expect(() => sync.sendPosition(nakal)).not.toThrow();
+    expect(sync.sendPosition(nakal)).toBe(false);
+  });
+
+  it('sendIntervalMs tak valid → RangeError saat konstruksi (konvensi stats.ts)', () => {
+    const dc = new FakeRTCDataChannel('position');
+    for (const bad of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        () =>
+          new DataChannelSync(asDataChannel(dc), {
+            onPosition: () => undefined,
+            sendIntervalMs: bad,
+          }),
+      ).toThrow(RangeError);
+    }
+  });
+
+  it('maxBufferedAmount tak valid → RangeError saat konstruksi', () => {
+    const dc = new FakeRTCDataChannel('position');
+    for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        () =>
+          new DataChannelSync(asDataChannel(dc), {
+            onPosition: () => undefined,
+            maxBufferedAmount: bad,
+          }),
+      ).toThrow(RangeError);
+    }
+  });
+
+  it('nilai tepat batas valid diterima (0 untuk maxBufferedAmount, 1 untuk interval)', () => {
+    const dc = new FakeRTCDataChannel('position');
+    expect(
+      () =>
+        new DataChannelSync(asDataChannel(dc), {
+          onPosition: () => undefined,
+          maxBufferedAmount: 0,
+          sendIntervalMs: 1,
+        }),
+    ).not.toThrow();
+  });
+});

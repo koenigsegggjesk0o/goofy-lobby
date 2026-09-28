@@ -416,3 +416,28 @@ Stage Summary:
 - Bloker kredensial RESMI NOL: PAT github aktif, Supabase inti + write token aktif, Turnstile aktif, QA users aktif. Tersisa hanya opsional (Sentry DSN, Metered TURN) dan keputusan user (Fase 3 UI).
 - Reset #5 dipulihani penuh + mitigasi permanen untuk bagian QA users. Kelemahan tersisa: .env inti masih harus ditulis manual dari konteks sesi setelah reset (nilai secret tak boleh masuk git — batas ini jujur diterima).
 - Next: antrean bebas-kredensial (audit signaling data-channel-sync/mesh-room-controller, test langsung summarizeStressRuns) atau Fase 3 UI menunggu instruksi eksplisit user.
+
+---
+
+Task ID: 15-a/b/c
+Agent: main (Z.ai Code)
+Task: Antrean bebas-kredensial pasca-14-c: audit empiris lapisan signaling (data-channel-sync + re-audit ringan mesh-room-controller) + test langsung summarizeStressRuns
+
+Work Log:
+
+- Health check awal: dev 200, .env 17 entri utuh (tidak ada reset baru), git di 1a7064c.
+- AUDIT data-channel-sync (gaya 11-c/11-d/13-b — konsekuensi dibuktikan test, bukan spekulasi): TEMUAN 1 (konsekuensi nyata): sendPosition() memanggil JSON.stringify + dc.send TANPA try/catch — kontrak RTCDataChannel.send melempar InvalidStateError dan JSON.stringify melempar TypeError untuk input runtime eksotis (BigInt/sirkular); lemparan menjalar ke sendPositionToAll → setLocalPosition → host: SATU peer yang melempar MEMBATALKAN broadcast posisi ke peer sisanya (loop berhenti di tengah). FIX: try/catch di sendPosition → return false (best-effort jujur); komentar berisi bukti.
+- TEMUAN 2 (kontrak konstructor): opsi sendIntervalMs/maxBufferedAmount tak tervalidasi — interval NaN membuat throttle selalu lolos, batas negatif selalu memblokir backpressure. FIX: RangeError saat konstruksi (konvensi stats.ts 13-a).
+- POSITIF terkonfirmasi: PositionSchema memakai z.number().finite() (NaN/Infinity ditolak inbound); clampPosition mengunci outbound; close() melepas listener; handleMessage menolak non-string/JSON rusak/Zod gagal — semua sudah teruji sebelumnya.
+- TEST +6 unit (data-channel-sync 9→14): send melempar → false tanpa lempar keluar; BigInt → false; RangeError opsi tak valid (0/-5/NaN/±Inf interval; -1/NaN/±Inf buffer); nilai tepat batas diterima. REGRESI level manager (+1, manager 29→30): dua peer impolite, channel peer pertama disabotase melempar → sendPositionToAll TIDAK melempar dan peer kedua TETAP menerima payload — membuktikan fix di level pemanggil loop broadcast.
+- 15-b RE-AUDIT ringan mesh-room-controller: 4 Map (positions/lastEmittedStates/selectedPairs/pendingSignals) semuanya punya jalur pembersihan (removePeer hapus 4-4, connectPeer flush pending, leave clear pending); pendingSignals berbatas per-peer (shift saat > max) + TTL sweep. Tidak ada temuan baru — celah broadcast sebenarnya sudah ditutup di level DataChannelSync (15-a) yang melindungi SEMUA pemanggil termasuk setLocalPosition controller.
+- 15-c UTANG 13-a DIBAYAR: vitest include diperluas ke scripts/**/*.test.mts; scripts/dev/e2e-stress.test.mts BARU (8 test): laporan kosong; field opsional hilang tidak melempar; durasi HANYA dari run lulus (failed 9999ms tidak mencemari); suite bersarang di-walk rekursif; kunci judul suite›spec; durationStats memakai summarizeNumbers type-7 (nilai referensi 1..10: median 5.5, p95 9.55 — toBeCloseTo presisi 10, konvensi stats.test.ts); semua gagal → durationStats null; duration non-number diabaikan. Modul diimpor aman (efek samping spawn di-guard isMain — hanya konstanta argv terevaluasi). Dua bug test-ku sendiri tertangkap saat proses (bentuk tests salah + float presisi) — dikoreksi.
+- FIX LINT dari 14-c yang lolos gerbang kemarin (restore-qa-users.mjs 'crypto' no-undef): global crypto: readonly ditambahkan ke eslint scripts (resmi di Bun & Node 20+). Format 3 file.
+- GERBANG: bun run verify 6/6 LULUS exit 0 — typecheck ✓ lint ✓ format ✓ unit 668/668 (47 file) ✓ build ✓ e2e 8/9 spec (19 passed + 1 skip DSN jujur) ✓.
+
+Stage Summary:
+
+- Lapisan signaling dikeraskan di batas API eksternal (dc.send/stringify) + kontrak konstructor; konsekuensi bug dibuktikan regresi 2 level (unit + manager loop). Unit 654→668 (+14; data-channel 9→14, manager 29→30, scripts 0→8).
+- Utang test scripts/ (13-a) lunas: summarizeStressRuns kini dites langsung 8 kasus termasuk nilai referensi type-7.
+- mesh-room-controller: bersih (pembersihan Map lengkap, buffer berbatas) — tidak ada pekerjaan baru.
+- Semua antrean bebas-kredensial Fase 2 HABIS. Tersisa: instruksi eksplisit user untuk Fase 3 (UI), atau opsional (Sentry DSN, Metered TURN). Cron webDevReview aktif (job 420612).

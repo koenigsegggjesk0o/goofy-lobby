@@ -23,9 +23,21 @@ const ENV_PATH = path.join(ROOT, '.env');
 
 /** QA users stabil di cloud (dibuat 27 Sep 2026 via admin API). */
 const QA_USERS = [
-  { role: 'ALPHA', email: 'qa.alpha@goofy.example.com', id: '7db26a0a-9ce5-4558-bd08-9612e9e9febe' },
-  { role: 'BRAVO', email: 'qa.bravo@goofy.example.com', id: '6913d097-3811-48e6-93fd-78aadae05f3c' },
-  { role: 'CHARLIE', email: 'qa.charlie@goofy.example.com', id: '44fc7f03-d44f-4933-9fca-5d9b089e25e2' },
+  {
+    role: 'ALPHA',
+    email: 'qa.alpha@goofy.example.com',
+    id: '7db26a0a-9ce5-4558-bd08-9612e9e9febe',
+  },
+  {
+    role: 'BRAVO',
+    email: 'qa.bravo@goofy.example.com',
+    id: '6913d097-3811-48e6-93fd-78aadae05f3c',
+  },
+  {
+    role: 'CHARLIE',
+    email: 'qa.charlie@goofy.example.com',
+    id: '44fc7f03-d44f-4933-9fca-5d9b089e25e2',
+  },
 ];
 
 function parseEnv(text) {
@@ -44,7 +56,9 @@ function generatePassword() {
 
 async function main() {
   if (!existsSync(ENV_PATH)) {
-    console.error('[restore-qa] .env tidak ditemukan — tulis dulu kredensial inti (lihat .env.example)');
+    console.error(
+      '[restore-qa] .env tidak ditemukan — tulis dulu kredensial inti (lihat .env.example)',
+    );
     process.exit(1);
   }
   const envText = readFileSync(ENV_PATH, 'utf8');
@@ -72,7 +86,9 @@ async function main() {
       console.error(`[restore-qa] ${user.role}: HTTP ${res.status} — ${await res.text()}`);
       process.exit(1);
     }
-    console.log(`[restore-qa] ${user.role} (${user.email}): password di-reset (HTTP ${res.status})`);
+    console.log(
+      `[restore-qa] ${user.role} (${user.email}): password di-reset (HTTP ${res.status})`,
+    );
     const entries = {
       [`TEST_USER_${user.role}_EMAIL`]: user.email,
       [`TEST_USER_${user.role}_PASSWORD`]: password,
