@@ -22,7 +22,6 @@ test-results/
 
 # artefak sandbox (lokal saja — bukan bagian dari produk)
 Caddyfile
-worklog.md
 download/
 upload/
 mini-services/
@@ -31,3 +30,6 @@ skills/
 .z-ai-config/
 .claude/
 tool-results/
+# CATATAN: worklog.md SENGAJA di-commit sejak insiden reset #4 (lihat header
+# worklog) — file tracked terbukti selamat melewati reset sandbox; dua
+# insiden kehilangan sudah cukup.
