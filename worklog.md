@@ -441,3 +441,24 @@ Stage Summary:
 - Utang test scripts/ (13-a) lunas: summarizeStressRuns kini dites langsung 8 kasus termasuk nilai referensi type-7.
 - mesh-room-controller: bersih (pembersihan Map lengkap, buffer berbatas) — tidak ada pekerjaan baru.
 - Semua antrean bebas-kredensial Fase 2 HABIS. Tersisa: instruksi eksplisit user untuk Fase 3 (UI), atau opsional (Sentry DSN, Metered TURN). Cron webDevReview aktif (job 420612).
+
+---
+
+Task ID: 16
+Agent: main (Z.ai Code)
+Task: Audit kesesuaian terhadap main prompt (pertanyaan user: "semua sesuai main prompt?") + gerbang verifikasi segar + pemulihan cron registry
+
+Work Log:
+
+- Health check: dev :3000 HTTP 200; .env + ~/.git-credentials + /home/z/.goofy-creds utuh (tidak ada reset baru); working tree clean di ba8017c.
+- Git sinkron penuh: git fetch → main...origin/main, 0 commit ahead — Task 15 (ba8017c) sudah ter-push ke GitHub.
+- GERBANG SEGAR: bun run verify 6/6 LULUS exit 0 — typecheck 4.1s ✓ lint 3.2s ✓ format 3.4s ✓ unit 668/668 (13.3s) ✓ build 4.3s ✓ e2e 8/9 spec = 19 passed (33.4s; 1 skip jujur-DSN) ✓.
+- Browser live (agent-browser): / render penuh (title benar, body 3272 karakter), 0 page error, console bersih (hanya vite connect debug).
+- Cron registry tersapu lagi (total=0) → webDevReview 15-menit dibuat ulang (job 420689) dengan penjaga eksplisit di pesan tugas: UI produk Fase 3 TERKUNCI sampai instruksi eksplisit user di chat utama — agen cron diarahkan ke audit/hardening ringan bila antrean habis.
+- Audit konformansi main prompt disusun untuk jawaban user (tabel per fase) — sumber: docs/dod-audit-fase1.md (15 item DoD: 14 lulus, 1 sebagian = push workflow CI) + docs/fase-2-fitur-logika.md + worklog Task 14-b/14-c/15.
+
+Stage Summary:
+
+- KONFORMANSI MAIN PROMPT: seluruh lingkup yang diizinkan spek sejauh ini TERPENUHI dan baru diverifikasi ulang segar (bukti di atas). Yang by-design belum: UI produk (Fase 3 — terkunci menunggu instruksi eksplisit user), push 2 file workflow CI (butuh PAT scope Workflows R/W atau salin manual via web UI), deploy Edge Function paddle-webhook (butuh registrasi dashboard Paddle + secrets).
+- Opsional tersisa: Sentry DSN, kredensial Metered TURN, swap captcha secret dashboard ke real key sebelum produksi.
+- Cron webDevReview aktif kembali (job 420689). Tidak ada perubahan kode produk sesi ini — murni audit + verifikasi + infra.
