@@ -475,8 +475,15 @@ export class PeerConnectionManager {
 
   /**
    * Baca pasangan terpilih dari getStats() — tidak pernah melempar.
-   * (RTCStatsReport di-spread lalu dilempar ke parser murni; cast tunggal
-   * karena lib.dom tidak memberi index signature pada RTCStats.)
+   *
+   * Koleksi entri memakai forEach, BUKAN spread: RTCStatsReport asli adalah
+   * MAPLIKE — iterator-nya menghasilkan pasangan [key, value] sehingga
+   * `[...report]` memberi array-of-pair yang `entry.type`-nya undefined dan
+   * parser selalu return null (bukti empiris live 2-tab mesh 28 Sep 2026:
+   * 10 entri, semua type undefined, event selected-pair tak pernah muncul;
+   * probe 11-a selalu lolos karena memakai destructure `[, stats]`).
+   * forEach memberi VALUE di argumen pertama untuk bentuk maplike ASLI dan
+   * untuk array-of-object fake di unit test — satu jalur untuk keduanya.
    */
   private async readSelectedPair(peer: ManagedPeer): Promise<SelectedPairInfo | null> {
     if (peer.pc.signalingState === 'closed') {
@@ -484,7 +491,11 @@ export class PeerConnectionManager {
     }
     try {
       const report = await peer.pc.getStats();
-      return pickSelectedPair([...report] as unknown as StatsEntryLike[]);
+      const entries: StatsEntryLike[] = [];
+      (report as { forEach(cb: (stat: unknown) => void): void }).forEach((stat) => {
+        entries.push(stat as StatsEntryLike);
+      });
+      return pickSelectedPair(entries);
     } catch {
       return null;
     }

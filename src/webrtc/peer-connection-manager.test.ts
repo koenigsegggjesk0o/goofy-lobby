@@ -473,6 +473,38 @@ describe('PeerConnectionManager — pasangan terpilih (selected pair)', () => {
     return { manager, pc, pairs };
   }
 
+  it('report maplike ASLI (forEach value-first, iterator [key,value]) → onSelectedPair tetap terbaca (regresi 14-b)', async () => {
+    const wire = makePairManager();
+    wire.manager.addPeer(sessionB, false);
+    // Bukti empiris 28 Sep 2026: RTCStatsReport asli adalah maplike —
+    // [...report] menghasilkan pasangan [key, value] sehingga parser lama
+    // diam-null di browser nyata (mesh live 2-tab: 10 entri semua type
+    // undefined). readSelectedPair kini mengumpulkan via forEach dan parser
+    // menormalisasi kedua bentuk. Test ini mengunci jalur maplike di level
+    // manager — fake default (array-of-object) TIDAK menutup bentuk ini.
+    const entries = pairEntries('host', 'host');
+    const maplike = {
+      forEach(cb: (value: Record<string, unknown>) => void): void {
+        for (const entry of entries) cb(entry);
+      },
+      *[Symbol.iterator](): Iterator<[string, Record<string, unknown>]> {
+        for (const entry of entries) yield [String(entry.id ?? 'x'), entry];
+      },
+    };
+    wire.pc.getStats = async () => maplike as unknown as Array<Record<string, unknown>>;
+    wire.pc.simulateState({ connectionState: 'connected', iceConnectionState: 'connected' });
+
+    await vi.waitFor(() => {
+      expect(wire.pairs).toHaveLength(1);
+    });
+    expect(wire.pairs[0]).toEqual({
+      sessionId: sessionB.sessionId,
+      localType: 'host',
+      remoteType: 'host',
+    });
+    wire.manager.closeAll();
+  });
+
   it('memasuki connected → sampel segera → onSelectedPair dengan tipe pasangan', async () => {
     const wire = makePairManager();
     wire.manager.addPeer(sessionB, false);

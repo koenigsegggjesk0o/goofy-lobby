@@ -213,3 +213,59 @@ describe('pickSelectedPair', () => {
     expect(isSelectedPairRelay(pair)).toBe(false);
   });
 });
+
+describe('pickSelectedPair — bentuk iterator maplike RTCStatsReport (regresi 14-b)', () => {
+  /**
+   * Bukti empiris 28 Sep 2026: [...report] di Chromium ASLI menghasilkan
+   * pasangan [key, value], bukan objek stats — pemanggil lama men-spread
+   * langsung sehingga entry.type undefined semua dan parser diam-null
+   * (mesh live: 10 entri, 0 kandidat terbaca). Parser kini menormalisasi
+   * kedua bentuk; test ini MENGUNCI perilaku itu.
+   */
+  it('menerima entri pasangan [key, value] hasil spread maplike — membaca value-nya', () => {
+    const report = chromeLike().map((entry) => [
+      entry.id ?? 'x',
+      entry,
+    ]) as unknown as StatsEntryLike[];
+    const pair = mustPair(pickSelectedPair(report));
+    expect(pair.localType).toBe('relay');
+    expect(pair.remoteType).toBe('relay');
+    expect(pair.selected).toBe(true);
+    expect(pair.nominated).toBe(true);
+    expect(pair.state).toBe('succeeded');
+  });
+
+  it('campuran bentuk objek dan pair [key, value] tetap konsisten', () => {
+    const base = chromeLike();
+    // Helper narrow tanpa non-null assertion (konvensi proyek).
+    function at(i: number): StatsEntryLike {
+      const entry = base[i];
+      if (entry === undefined) throw new Error(`fixture chromeLike indeks ${i} hilang`);
+      return entry;
+    }
+    const mixed: StatsEntryLike[] = [
+      at(0),
+      [at(1).id ?? 'x', at(1)] as unknown as StatsEntryLike,
+      at(2),
+      [at(3).id ?? 'x', at(3)] as unknown as StatsEntryLike,
+      at(4),
+      at(5),
+    ];
+    const pair = mustPair(pickSelectedPair(mixed));
+    expect(pair.localType).toBe('relay');
+    expect(pair.selected).toBe(true);
+  });
+
+  it('pair [key, value] yang value-nya bukan objek diabaikan tanpa melempar', () => {
+    const report = [
+      ['junk', 42],
+      ['junk2', null],
+    ] as unknown as StatsEntryLike[];
+    expect(pickSelectedPair(report)).toBeNull();
+  });
+
+  it('array 2-elemen yang TIDAK berasal dari maplike (array stats asli) tidak salah dinormalisasi', () => {
+    // Entri objek dengan hanya type 'unknown-shape' dari pair rusak → null.
+    expect(pickSelectedPair([{ type: 'unknown-shape' }])).toBeNull();
+  });
+});

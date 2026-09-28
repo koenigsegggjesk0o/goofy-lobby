@@ -62,20 +62,45 @@ function asBoolean(value: unknown): boolean | null {
 }
 
 /**
- * Pilih pasangan kandidat terpilih dari daftar entri stats (hasil
- * `[...report]` atau bentuk array serupa). Mengembalikan null bila tidak
- * ada pasangan yang bisa dipilih.
+ * Normalisasi satu entri: iterator RTCStatsReport (maplike) menghasilkan
+ * pasangan [key, value] — value-lah objek stats-nya. Bentuk objek langsung
+ * diteruskan apa adanya. Pair yang bukan [string, objek] diperlakukan
+ * sebagai entri kosong (type tak dikenal → diabaikan pemanggil).
+ */
+function normalizeEntry(entry: StatsEntryLike): StatsEntryLike {
+  if (!Array.isArray(entry) || entry.length !== 2) {
+    return entry;
+  }
+  const [, value] = entry;
+  if (value === null || typeof value !== 'object') {
+    return { type: 'unknown-shape' };
+  }
+  return value as StatsEntryLike;
+}
+
+/**
+ * Pilih pasangan kandidat terpilih dari daftar entri stats. Mengembalikan null
+ * bila tidak ada pasangan yang bisa dipilih.
+ *
+ * Bentuk input yang diterima (keduanya dinormalisasi lebih dulu):
+ * - array of RTCStats-like object (hasil forEach/koleksi manual — bentuk
+ *   yang dipakai PeerConnectionManager.readSelectedPair);
+ * - array of pair [key, value] (bentuk iterator maplike RTCStatsReport asli —
+ *   `[...report]` di browser). Pertahanan ini menutup kelas bug terbukti
+ *   (28 Sep 2026): pemanggil lama men-spread report langsung sehingga semua
+ *   `entry.type` undefined dan parser selalu diam-null.
  */
 export function pickSelectedPair(entries: readonly StatsEntryLike[]): SelectedPairInfo | null {
+  const normalized = entries.map(normalizeEntry);
   const candidates = new Map<string, StatsEntryLike>();
-  for (const entry of entries) {
+  for (const entry of normalized) {
     if (entry.type === 'local-candidate' || entry.type === 'remote-candidate') {
       const id = asString(entry.id);
       if (id !== null) candidates.set(id, entry);
     }
   }
 
-  const pairs = entries.filter((entry) => entry.type === 'candidate-pair');
+  const pairs = normalized.filter((entry) => entry.type === 'candidate-pair');
   if (pairs.length === 0) return null;
 
   const explicit = pairs.find((pair) => pair.selected === true);

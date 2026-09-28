@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { expect, test } from '@playwright/test';
 
 /**
@@ -5,7 +7,25 @@ import { expect, test } from '@playwright/test';
  * init dari VITE_SENTRY_DSN → captureException (eventId) → flush (terkirim)
  * → probe langsung ke endpoint ingest (bukti keras HTTP 200, sama seperti
  * verifikasi F1.2 tapi dari dalam browser).
+ *
+ * Self-gating: tanpa VITE_SENTRY_DSN asli spec ini DI-SKIP jujur (bukan
+ * DSN mock) — selaras gating env-matrix di `bun run verify`, sehingga
+ * `playwright test` langsung pun tidak merah hanya karena env opsional
+ * belum disetel.
  */
+const envVars = new Set<string>();
+const envPath = resolve(process.cwd(), '.env');
+if (existsSync(envPath)) {
+  for (const line of readFileSync(envPath, 'utf8').split('\n')) {
+    const m = /^([A-Z0-9_]+)=.+$/.exec(line.trim());
+    if (m !== null && m[1] !== undefined) envVars.add(m[1]);
+  }
+}
+const hasSentryDsn = envVars.has('VITE_SENTRY_DSN');
+test.skip(
+  !hasSentryDsn,
+  'VITE_SENTRY_DSN tidak disetel — ingest live Sentry butuh DSN asli (anti-mock)',
+);
 
 test('init → capture → flush → ingest live', async ({ page }) => {
   await page.goto('/test-harness/');

@@ -59,7 +59,7 @@ Aturan penting (keharusan Vite + keamanan):
 ## Testing
 
 - **Vitest** — unit test untuk logic murni (Zod schema, SDP munging,
-  kalkulasi posisi, cache). Tidak butuh browser. 649 test, 46 file
+  kalkulasi posisi, cache). Tidak butuh browser. 654 test, 46 file
   (termasuk `src/db/migrations.test.ts` — migrasi dieksekusi di PostgreSQL
   asli via PGlite/WASM + RLS/grant/trigger diuji empiris).
 - **Playwright** — E2E via `test-harness/` (halaman HTML polos yang memuat
