@@ -59,7 +59,7 @@ Aturan penting (keharusan Vite + keamanan):
 ## Testing
 
 - **Vitest** — unit test untuk logic murni (Zod schema, SDP munging,
-  kalkulasi posisi, cache). Tidak butuh browser. 668 test, 47 file (termasuk scripts/dev/e2e-stress.test.mts — agregasi stress dites langsung)
+  kalkulasi posisi, cache). Tidak butuh browser. 681 test, 48 file (termasuk scripts/dev/e2e-stress.test.mts — agregasi stress dites langsung)
   (termasuk `src/db/migrations.test.ts` — migrasi dieksekusi di PostgreSQL
   asli via PGlite/WASM + RLS/grant/trigger diuji empiris).
 - **Playwright** — E2E via `test-harness/` (halaman HTML polos yang memuat
@@ -121,6 +121,15 @@ bun scripts/db/apply-migrations.mjs               # apply yang pending
 - Catatan penting: tabel yang dibuat lewat Management API **tidak menerima
   default grants** untuk role PostgREST — migrasi `0005_postgrest_grants`
   memulihkannya (pola standar docs Supabase).
+- **0014/0015 = remedi audit Task 19** (audit BAGIAN 6 di cloud asli,
+  sesi 28 Sep): `0014` backfill drift `rls_auto_enable`+`ensure_rls`
+  (create-if-missing — objek cloud yang sudah ada tidak disentuh);
+  `0015` menutup jalur eskalasi premium (revoke INSERT `profiles` dari
+  role client + drop policy insert-own dead-code; provisioning tetap
+  lewat trigger `handle_new_user`, penulis sah `is_premium` tetap
+  service_role). Keduanya terverifikasi eksekusi+semantik di PGlite
+  (regresi rantai eskalasi + event trigger) — **apply ke cloud menunggu
+  token Supabase aktif kembali** (`bun scripts/db/apply-migrations.mjs`).
 
 ### Catatan desain monitoring (F1.8)
 
@@ -284,13 +293,18 @@ src/
                  paddle-webhook (router event: transaction.completed →
                  premium, subscription.canceled → non; core teruji)
                  premium-status-service (baca is_premium + revalidasi)
-  db/            ✅ Fase 2/12 (test-only): migrations.test.ts — 13
+  db/            ✅ Fase 2/12 (test-only): migrations.test.ts — 15
                  migrasi dijalankan di PGlite + idempotensi + matriks
-                 RLS + lockdown kolom is_premium + guard blokir
+                 RLS + lockdown kolom is_premium + guard blokir +
+                 regresi audit Task 19 (rantai eskalasi premium putus,
+                 event trigger ensure_rls)
 supabase/
   migrations/    0001–0006 (F1) + 0007–0013 (Fase 2: friendships+blocks+
                  guard trigger, messages+RLS gate pertemanan, is_premium+
                  lockdown column-grant, bucket soundboard + storage RLS)
+                 + 0014–0015 (remedi audit Task 19: backfill
+                 rls_auto_enable/ensure_rls + revoke INSERT profiles —
+                 apply ke cloud menunggu token)
   functions/
     paddle-webhook/ SKELETON Deno (di-ignore tsc/eslint proyek; import
                  map terkunci + sloppy-imports; BELUM pernah dijalankan —

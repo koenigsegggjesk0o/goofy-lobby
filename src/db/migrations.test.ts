@@ -1,11 +1,13 @@
 /**
- * Verifikasi migrasi database 0001..0013 pada PostgreSQL ASLI in-process
+ * Verifikasi migrasi database 0001..0015 pada PostgreSQL ASLI in-process
  * (@electric-sql/pglite, build WASM) — mengubah status migrasi dari
  * "ditulis tapi tak pernah dijalankan" menjadi "terverifikasi eksekusi +
  * semantik keamanan lokal". File ini mengeksekusi seluruh
  * supabase/migrations/*.sql secara berurutan, LALU menguji perilaku
  * RLS / grant kolom / trigger guard secara empiris lewat role switching
- * (SET ROLE authenticated + klaim JWT di GUC sesi).
+ * (SET ROLE authenticated + klaim JWT di GUC sesi). Dua migrasi terakhir
+ * (0014/0015) adalah remedi audit Task 19 — tes regresinya ada di dua test
+ * berlabel "audit Task 19" di bawah.
  *
  * BATAS KEJUJURAN:
  * - PGlite tidak membawa infrastruktur Supabase. Schema `auth` (tabel users
@@ -49,10 +51,12 @@ const USER_A = '11111111-1111-1111-1111-111111111111';
 const USER_B = '22222222-2222-2222-2222-222222222222';
 const USER_C = '33333333-3333-3333-3333-333333333333';
 const USER_D = '44444444-4444-4444-4444-444444444444';
+/** User khusus test regresi audit Task 19 TEMUAN 1 (rantai eskalasi premium). */
+const USER_E = '55555555-5555-5555-5555-555555555555';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../supabase/migrations', import.meta.url));
 
-/** File migrasi urut nama (zero-padded 0001..0013 → urut leksikografis = numerik). */
+/** File migrasi urut nama (zero-padded 0001..0015 → urut leksikografis = numerik). */
 const MIGRATION_FILES = readdirSync(MIGRATIONS_DIR)
   .filter((f) => f.endsWith('.sql'))
   .sort();
@@ -189,7 +193,7 @@ beforeAll(async () => {
   // 1) Stub lingkungan Supabase (role, schema auth/storage, helper functions).
   await db.exec(SUPABASE_STUB_SQL);
 
-  // 2) Terapkan 0001..0013 BERURUTAN. Error apa pun → seluruh suite gagal
+  // 2) Terapkan 0001..0015 BERURUTAN. Error apa pun → seluruh suite gagal
   //    dengan nama file — memang begitu, kita justru berburu SQL rusak.
   //    (Pass idempotensi sengaja bukan di sini — lihat test terakhir + header.)
   for (const file of MIGRATION_FILES) {
@@ -223,14 +227,15 @@ afterAll(async () => {
   await db.close();
 });
 
-describe('migrasi 0001..0013 pada PGlite (WASM Postgres)', () => {
+describe('migrasi 0001..0015 pada PGlite (WASM Postgres)', () => {
   it(
-    'membaca 13 file migrasi dan membentuk semua objek inti (tabel, kolom, policy, bucket)',
+    'membaca 15 file migrasi dan membentuk semua objek inti (tabel, kolom, policy, bucket)',
     { timeout: 60_000 },
     async () => {
-      expect(MIGRATION_FILES).toHaveLength(13);
+      expect(MIGRATION_FILES).toHaveLength(15);
       expect(MIGRATION_FILES[0]).toBe('0001_profiles.sql');
-      expect(MIGRATION_FILES[12]).toBe('0013_soundboard_storage_rls.sql');
+      expect(MIGRATION_FILES[13]).toBe('0014_rls_auto_enable_backfill.sql');
+      expect(MIGRATION_FILES[14]).toBe('0015_profiles_insert_lockdown.sql');
 
       const tables = await db.query<{ tablename: string }>(
         `select tablename from pg_tables
@@ -288,7 +293,6 @@ describe('migrasi 0001..0013 pada PGlite (WASM Postgres)', () => {
         'messages_insert_sender_friends',
         'messages_select_participants',
         'profiles_delete_own',
-        'profiles_insert_own',
         'profiles_select_authenticated',
         'profiles_update_own',
         'soundboard_delete_own',
@@ -710,6 +714,118 @@ describe('migrasi 0001..0013 pada PGlite (WASM Postgres)', () => {
       const after = await selectTs();
       expect(after.updated).toBeGreaterThan(before.updated); // maju dari nilai sebelum update
       expect(after.updated).toBeGreaterThan(after.created); // dan terpisah dari waktu insert
+    },
+  );
+
+  it(
+    'audit Task 19 TEMUAN 2 (0014): ensure_rls otomatis mengaktifkan RLS untuk CREATE TABLE di public',
+    { timeout: 60_000 },
+    async () => {
+      await asSuperuser();
+
+      // Fungsi kanonik ada, SECURITY DEFINER, search_path terkunci —
+      // paritas properti yang diverifikasi audit pada versi cloud (blok 10).
+      const fn = await one<{ prosecdef: boolean; proconfig: string | null }>(
+        `select p.prosecdef, array_to_string(p.proconfig, ',') as proconfig
+         from pg_proc p
+         join pg_namespace n on n.oid = p.pronamespace
+         where n.nspname = 'public' and p.proname = 'rls_auto_enable'`,
+      );
+      expect(fn.prosecdef).toBe(true);
+      expect(fn.proconfig).toContain('search_path=pg_catalog');
+
+      // Event trigger terpasang dan ENABLED ('O' = origin, aktif).
+      expect(
+        await one<{ evtenabled: string }>(
+          `select evtenabled from pg_event_trigger where evtname = 'ensure_rls'`,
+        ),
+      ).toEqual({ evtenabled: 'O' });
+
+      // Bukti empiris perilaku (bukan sekadar keberadaan objek): tabel baru
+      // di skema public otomatis RLS-on tanpa ALTER manual.
+      await db.exec('create table public._rls_audit_probe (id int primary key);');
+      const probe = await one<{ relrowsecurity: boolean }>(
+        `select c.relrowsecurity from pg_class c
+         join pg_namespace n on n.oid = c.relnamespace
+         where n.nspname = 'public' and c.relname = '_rls_audit_probe'`,
+      );
+      expect(probe.relrowsecurity).toBe(true);
+      await db.exec('drop table public._rls_audit_probe;');
+
+      // Tabel di schema LAIN tidak tersentuh (guard schema_name = 'public').
+      await db.exec('create schema if not exists audit_scratch;');
+      await db.exec('create table audit_scratch._rls_audit_probe (id int primary key);');
+      const outside = await one<{ relrowsecurity: boolean }>(
+        `select c.relrowsecurity from pg_class c
+         join pg_namespace n on n.oid = c.relnamespace
+         where n.nspname = 'audit_scratch' and c.relname = '_rls_audit_probe'`,
+      );
+      expect(outside.relrowsecurity).toBe(false);
+      await db.exec('drop table audit_scratch._rls_audit_probe;');
+      await db.exec('drop schema audit_scratch;');
+    },
+  );
+
+  it(
+    'audit Task 19 TEMUAN 1 (0015): rantai eskalasi premium (delete→insert ulang) TERPUTUS di lapisan privilege',
+    { timeout: 60_000 },
+    async () => {
+      // User E dibuat SEKARANG — sekaligus membuktikan provisioning via
+      // trigger handle_new_user tetap jalan SETELAH revoke (trigger SECURITY
+      // DEFINER berjalan sebagai owner, bukan sebagai role client).
+      await asSuperuser();
+      await db.exec(`insert into auth.users (id, raw_user_meta_data) values ('${USER_E}', '{}')`);
+      expect(
+        await one<{ display_name: string }>(
+          'select display_name from public.profiles where id = $1',
+          [USER_E],
+        ),
+      ).toEqual({ display_name: `guest_${USER_E.slice(0, 8)}` });
+
+      // Langkah (1) rantai audit: DELETE profil sendiri — MASIH diizinkan
+      // (policy profiles_delete_own + grant DELETE 0005 tetap, by design).
+      await asUser(USER_E);
+      const del = await db.query('delete from public.profiles where id = $1', [USER_E]);
+      expect(del.affectedRows).toBe(1);
+
+      // Langkah (2) rantai audit: INSERT ulang dengan is_premium = true —
+      // DITOLAK sebelum RLS sempat dievaluasi (revoke level tabel, bukan
+      // kolom): inilah penutup jalur eskalasi yang dilaporkan audit.
+      await expectPgError(
+        () =>
+          db.query(
+            'insert into public.profiles (id, display_name, is_premium) values ($1, $2, true)',
+            [USER_E, 'Hacker'],
+          ),
+        '42501',
+        'permission denied',
+      );
+
+      // INSERT polos tanpa is_premium juga tertutup (revoke PENUH untuk
+      // role client; policy insert-own sudah dead-code dan di-drop 0015).
+      await expectPgError(
+        () =>
+          db.query('insert into public.profiles (id, display_name) values ($1, $2)', [
+            USER_E,
+            'Guest',
+          ]),
+        '42501',
+        'permission denied',
+      );
+
+      // anon sama-sama tanpa jalur insert (revoke menyasar kedua role client).
+      await db.exec('reset role;');
+      await db.exec('reset request.jwt.claims;');
+      await db.exec('set role anon;');
+      await expectPgError(
+        () =>
+          db.query('insert into public.profiles (id, display_name) values ($1, $2)', [
+            USER_E,
+            'Anon',
+          ]),
+        '42501',
+        'permission denied',
+      );
     },
   );
 
