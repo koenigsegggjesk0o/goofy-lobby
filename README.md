@@ -163,9 +163,23 @@ Setup (sekali, oleh pemilik repo):
      (`supabase.com/dashboard/account/tokens`)
    - Name: `SUPABASE_PROJECT_REF` — ref project (tercantum di `.env`
      lokal sebagai `SUPABASE_PROJECT_REF`)
-3. Workflow `supabase-keepalive.yml` sudah terpasang (F1.7); bisa juga
-   dipicu manual dari tab **Actions → Supabase keepalive → Run workflow**.
-   Endpoint kueri diverifikasi live (HTTP 200/201, hasil `[{"?column?":1}]`).
+3. Status workflow (Task 17, jujur): file `supabase-keepalive.yml`
+   DIBUAT ULANG — file era F1.7 hilang permanen saat reset sandbox #3
+   (untracked + excluded, tak pernah ter-push). Salinan kanonik kini
+   terlacak git di `ci/workflows/`; pulihkan salinannya ke
+   `.github/workflows/` (mis. setelah reset) dengan
+   `bun scripts/dev/restore-ci.mjs` (idempoten, 11 unit test).
+   File BELUM ter-push — PAT tanpa scope `workflow` menolak push yang
+   menyentuh `.github/workflows` (bukti empiris Task 17) — jadi cron ini
+   BELUM berjalan di GitHub. Membuka (salah satu):
+   - edit PAT di GitHub → Fine-grained permissions → Workflows:
+     **Read and write**, lalu minta agent hapus exclude + push; atau
+   - salin manual isi `ci/workflows/` ke `.github/workflows/` via web UI
+     GitHub (Add file → Create new file, salin isi persis).
+     Begitu aktif: bisa dipicu manual dari tab **Actions → Supabase
+     keepalive → Run workflow** (`workflow_dispatch`). Endpoint kueri
+     diverifikasi live (HTTP 201, hasil `[{"?column?":1}]` — token
+     write-scope saat ini sudah mencukupi untuk endpoint ini).
 
 ## Struktur (Fase 1 — sistem inti; status per modul + TURN Fase 2)
 
@@ -306,16 +320,32 @@ scripts/
                  playwright --repeat-each=N + agregasi durasi per spec
                  persentil p50–p99 + mean/stdev via src/lib/stats.ts;
                  metodologi distribusi 8-f)
+                 ✅ 14-c: restore-qa-users.mjs (pemulih pasca-reset: reset
+                 password 3 QA via admin API + tulis ulang TEST_USER_* di
+                 .env; idempoten, tanpa secret di repo)
+                 ✅ 17: restore-ci.mjs (pulihkan .github/workflows dari
+                 salinan kanonik ci/workflows/ — idempoten + guard
+                 .git/info/exclude; 11 unit test di restore-ci.test.mts)
 supabase/
   migrations/    ✅ F1.2 (profiles + RLS + bucket voice-snippets + grants)
                   ✅ F1.5 (0006: voice_snippet_path + policy select authenticated)
-.github/
-  workflows/     ✅ F1.7:
-                 ci.yml (push/PR main: lint + typecheck + test + build
-                   via bun; e2e tetap lokal — butuh secrets TEST_USER_* +
-                   VITE_* di repo bila mau diaktifkan di CI)
-                 supabase-keepalive.yml (cron tiap 3 hari: `select 1`
-                   lewat Management API — anti auto-pause free tier)
+ci/
+  workflows/      ✅ F1.7 → DIBUAT ULANG Task 17 (file asli hilang permanen
+                  di reset sandbox #3 — untracked + excluded; salinan
+                  kanonik kini TERLACAK GIT di sini = kebal reset):
+                  ci.yml (push/PR main: lint + typecheck + test + build via
+                    bun — keempat langkah terbukti hijau di SIMULASI CI
+                    bersih tanpa .env/kredensial, 668/668; e2e tetap
+                    lokal — butuh secrets TEST_USER_* + VITE_* bila mau
+                    diaktifkan di CI)
+                  supabase-keepalive.yml (cron tiap 3 hari: `select 1`
+                    lewat Management API, sukses 200/201 — endpoint
+                    diverifikasi live Task 17; + workflow_dispatch untuk
+                    picu manual)
+                  → disalin ke .github/workflows/ oleh
+                    scripts/dev/restore-ci.mjs; aktivasi di GitHub
+                    menunggu scope Workflows pada PAT (atau salin manual
+                    via web UI — lihat seksi keepalive di bawah)
 ```
 
 ### Catatan desain TURN fallback (Fase 2, Task 8-b)

@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Satu run in-flight per ref — PR yang di-push berulang tidak menumpuk antrean.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      # Bun dipin ke versi yang dipakai lokal (reproduksibilitas gerbang verify).
+      - uses: oven-sh/setup-bun@v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - run: bun install --frozen-lockfile
+
+      # Empat langkah = empat langkah lokal yang selalu hijau di gerbang
+      # `bun run verify` (sisanya: format + e2e — e2e butuh kredensial,
+      # sengaja tetap lokal; lihat README seksi "Supabase keepalive" & DoD F1).
+      - run: bun run lint
+      - run: bun run typecheck
+      - run: bun run test
+      - run: bun run build

@@ -462,3 +462,32 @@ Stage Summary:
 - KONFORMANSI MAIN PROMPT: seluruh lingkup yang diizinkan spek sejauh ini TERPENUHI dan baru diverifikasi ulang segar (bukti di atas). Yang by-design belum: UI produk (Fase 3 — terkunci menunggu instruksi eksplisit user), push 2 file workflow CI (butuh PAT scope Workflows R/W atau salin manual via web UI), deploy Edge Function paddle-webhook (butuh registrasi dashboard Paddle + secrets).
 - Opsional tersisa: Sentry DSN, kredensial Metered TURN, swap captcha secret dashboard ke real key sebelum produksi.
 - Cron webDevReview aktif kembali (job 420689). Tidak ada perubahan kode produk sesi ini — murni audit + verifikasi + infra.
+
+---
+
+Task ID: 17
+Agent: main (Z.ai Code)
+Task: Pertanyaan user "selain UI udah semua sesuai main prompt?" → audit penuh menemukan SATU ketidaksesuaian (file CI hilang permanen di reset #3, tak pernah dibuat ulang) → pulihkan lengkap dengan mitigasi anti-reset
+
+Work Log:
+
+- AUDIT atas pertanyaan user: seluruh item main prompt lain terpenuhi (bukti segar Task 16: verify 6/6, unit 668/668, e2e 19 passed, migrasi 13/13 cloud, git sinkron). SATU celah ditemukan via forensik: `.github/workflows/` TIDAK ADA di disk — worklog header pemulihan reset #3 mencatat 2 file CI/keepalive "HILANG PERMANEN dan harus dibuat ulang", dan ternyata memang belum pernah dibuat ulang (DoD F1 #12 = satu-satunya item ⚠️ sejak dulu, kini bahkan file-nya lenyap). Akar masalah: file itu TIDAK PERNAH BISA di-commit (PAT tanpa scope workflow) sehingga untracked+excluded = tidak dilindungi reset.
+- Kontrak endpoint keepalive diverifikasi LIVE sebelum menulis ulang: POST /v1/projects/{ref}/database/query {"query":"select 1"} → HTTP 201, body [{"?column?":1}] — persis kontrak terdokumentasi; token write-scope saat ini mencukupi.
+- Versi action diverifikasi (anti-tebak): actions/checkout@v7 (latest v7.0.1 via API), oven-sh/setup-bun@v2.2.0 (via ls-remote; API rate-limited). Bun dipin 1.3.14 = versi lokal.
+- 2 file ditulis ulang sesuai desain terdokumentasi (README + DoD): ci.yml (push/PR main, concurrency per-ref, checkout@v7, setup-bun pin, frozen-lockfile, lint→typecheck→test→build; e2e tetap lokal by design) + supabase-keepalive.yml (cron 17 3 */3 * * + workflow_dispatch, curl Management API, sukses 200/201, ::error bila gagal). Prettier --write merapikan keepalive.yml sekali.
+- SIMULASI CI PENUH (clone lokal bersih ke /tmp — persis kondisi runner GitHub: tanpa .env, tanpa secret, env -i): bun install --frozen-lockfile 161 pkg ✓ lint ✓ typecheck ✓ test 47 file/668/668 PASSED ✓ build ✓ (hanya warning chunk harness yang memang terdokumentasi) — membuktikan keempat langkah CI hijau tanpa kredensial sebelum push.
+- UJI EMPIRIS PUSH (branch temp ci-push-test, main tak tersentuh): GitHub MENOLAK — "refusing to allow a Personal Access Token to create or update workflow `.github/workflows/ci.yml` without `workflow` scope" → PAT saat ini tetap TANPA scope workflow (klaim lama terkonfirmasi segar). Strategi fallback dikunci: salinan kanonik TERLACAK GIT di ci/workflows/ (kebal reset — akar masalahnya adalah untracked) + script pemulih.
+- INSIDEN KECIL (footgun git, self-inflicted): file yang di-commit di branch temp ikut tersapu saat checkout main + branch -D. Dipulihkan dari dangling commit 7997788 via `git show` (object belum ter-GC) — pelajaran dicatat; salinan kanonik kini justru menghilangkan kelas risiko ini.
+- scripts/dev/restore-ci.mjs BARU: restoreWorkflows() menyalin ci/workflows/*.yml → .github/workflows/ (daftar file dibaca dari direktori — workflow baru otomatis ikut; hanya .yml; idempoten byte-per-byte; targetDir nested dibuat otomatis) + excludeGuardPresent() memeriksa .github/ masih di-exclude (pengaman: staging tak sengaja = seluruh push berikutnya diblokir GitHub). Guard isMain gaya e2e-stress.
+- BUG RUNTIME tertangkap test: import.meta.dir (khusus Bun) → TypeError di vitest (Node); diganti fileURLToPath(import.meta.url) standar — komentar di kode menjelaskan.
+- TEST +11 (restore-ci.test.mts, fs SUNGGUHAN via mkdtemp tanpa mock): salin fresh byte-identik; idempoten run-2 semua skip; target dirusak → ditimpa balik; non-.yml diabaikan; kanonik kosong = no-op jujur; kanonik hilang → throw; target nested dibuat; guard exclude: `.github/`/`.github` → true, substring palsu/kosong → false.
+- Live: `bun scripts/dev/restore-ci.mjs` → "0 disalin, 2 sudah identik" exit 0 (benar — file sudah disalin manual). README 3 blok diperbarui jujur (status + 2 opsi membuka blokade + bukti) + index.html.
+- GERBANG: bun run verify 6/6 LULUS exit 0 (unit 668→679, 48 file).
+- Commit + push: ci/workflows (kanonik), restore-ci.mjs + test, README, index.html, worklog — SEMUanya di luar .github/ sehingga push lolos; .git/info/exclude tetap mem-guard .github/.
+
+Stage Summary:
+
+- ITEM TERAKHIR yang tidak sesuai main prompt (di luar UI) KINI DIPULIHKAN dengan mitigasi permanen: 2 file workflow hidup lagi di .github/workflows/ (lokal) + salinan kanonik terlacak git di ci/workflows/ + restore-ci.mjs (11 test) + dokumentasi jujur berisi petunjuk membuka blokade.
+- Yang TERSISA untuk aktivasi CI di GitHub (butuh keputusan user, bukan pekerjaan agent): (A) edit PAT → Workflows: Read and write lalu suruh agent push, atau (B) salin manual isi ci/workflows/ via web UI + tambah 2 secrets (SUPABASE_ACCESS_TOKEN, SUPABASE_PROJECT_REF).
+- Bukti baru untuk jawaban user: CI-sim bersih 668/668 (langkah CI terbukti credential-free), endpoint keepalive live 201, penolakan PAT terkonfirmasi segar. Unit 668→679 (+11; scripts 8→19).
+- Konformansi main prompt di luar UI kini: semua item F1/F2 terpenuhi; satu-satunya yang "belum" = CI belum AKTIF di GitHub (file & jalur bukti siap, menunggu izin PAT — keputusan user) + deploy Edge Function paddle-webhook (butuh registrasi Paddle). Opsional by-spec: TURN Metered, Sentry DSN, captcha real secret pra-produksi.

@@ -1,0 +1,32 @@
+name: Supabase keepalive
+
+on:
+  schedule:
+    - cron: '17 3 */3 * *'
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Health-check database via Management API (select 1)
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+        run: |
+          set -eu
+          code="$(curl -sS -o /tmp/keepalive-body.json -w "%{http_code}" --max-time 30 \
+            -X POST "https://api.supabase.com/v1/projects/${SUPABASE_PROJECT_REF}/database/query" \
+            -H "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{"query":"select 1"}')"
+          echo "HTTP ${code}"
+          cat /tmp/keepalive-body.json
+          echo ""
+          # Endpoint ini terverifikasi live mengembalikan 201 (bukan 200) saat
+          # sukses — dua kode sama-sama diterima; selain itu gagal.
+          if [ "${code}" != "200" ] && [ "${code}" != "201" ]; then
+            echo "::error::keepalive gagal — HTTP ${code}" >&2
+            exit 1
+          fi
