@@ -334,6 +334,10 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
   /** Melepas peer + membersihkan cache + memancarkan peer-left. */
   private dropPeer(sessionId: string): void {
     this.pendingSignals.delete(sessionId);
+    // Posisi terakhir milik sesi yang pergi — dibuang supaya tidak bocor
+    // (memori) dan tidak muncul sebagai posisi BASI bila peer yang sama
+    // bergabung kembali nanti (Task 11-d).
+    this.positions.delete(sessionId);
     this.manager.removePeer(sessionId);
     this.lastEmittedStates.delete(sessionId);
     this.selectedPairs.delete(sessionId);

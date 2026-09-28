@@ -29,6 +29,16 @@ export const defaultPeerConnectionFactory: PeerConnectionFactory = (config) =>
  */
 export const DEFAULT_SELECTED_PAIR_RESAMPLE_MS = 1_500;
 
+/**
+ * Batas antrean kandidat remote per peer (Task 11-d) — kandidat yang tiba
+ * sebelum remoteDescription siap. Kandidat asli dari ICE stack terbatas
+ * (antarmuka jaringan × server ICE), tapi pesan 'ice' dari peer jaringan
+ * dikendalikan pihak jaringan: peer buggy/malicious bisa spam tanpa pernah
+ * mengirim deskripsi. Drop-terlama-dulu, konsisten dengan antrean sinyal
+ * controller (PENDING_SIGNAL_MAX_PER_PEER = 50).
+ */
+const MAX_PENDING_REMOTE_CANDIDATES = 50;
+
 type Timer = ReturnType<typeof setTimeout>;
 
 interface ManagedPeer {
@@ -411,6 +421,10 @@ export class PeerConnectionManager {
     }
     if (peer.pc.connectionState !== 'connected') {
       peer.connectedSampled = false;
+      // Episode berakhir (blip/restart) — re-sample episode ini tidak lagi
+      // relevan. Lepas timernya supaya flapping cepat tidak menumpuk timer
+      // pending tanpa batas (Task 11-d: ≤ 1 timer hidup per peer, selalu).
+      this.clearPairSampleTimer(peer);
       return;
     }
     if (peer.connectedSampled) {
@@ -418,6 +432,9 @@ export class PeerConnectionManager {
     }
     peer.connectedSampled = true;
     void this.readAndEmitSelectedPair(peer);
+    // Episode baru: pastikan slot timer kosong (normalnya sudah dibersihkan
+    // saat episode sebelumnya berakhir — ini jalur defensif).
+    this.clearPairSampleTimer(peer);
     peer.pairSampleTimer = setTimeout(() => {
       peer.pairSampleTimer = null;
       // Hanya bila peer masih hidup di sini dan masih connected — timer
@@ -430,6 +447,14 @@ export class PeerConnectionManager {
         void this.readAndEmitSelectedPair(peer);
       }
     }, this.selectedPairResampleMs);
+  }
+
+  /** Membersihkan timer re-sample yang tertunda (bila ada) + nol-kan slotnya. */
+  private clearPairSampleTimer(peer: ManagedPeer): void {
+    if (peer.pairSampleTimer !== null) {
+      clearTimeout(peer.pairSampleTimer);
+      peer.pairSampleTimer = null;
+    }
   }
 
   /** Baca stats → pancarkan hanya bila ada info BARU (signature berubah). */
@@ -599,6 +624,11 @@ export class PeerConnectionManager {
     };
     if (peer.pc.remoteDescription === null) {
       // Deskripsi remote belum diterapkan — tahan, flush oleh handleDescription.
+      // Terbatas MAX_PENDING_REMOTE_CANDIDATES (drop terlama) — pesan 'ice'
+      // dikendalikan pihak jaringan, antrean tak boleh tumbuh tak berbatas.
+      if (peer.pendingRemoteCandidates.length >= MAX_PENDING_REMOTE_CANDIDATES) {
+        peer.pendingRemoteCandidates.shift();
+      }
       peer.pendingRemoteCandidates.push(candidate);
       return;
     }

@@ -623,3 +623,97 @@ describe('PeerConnectionManager — pasangan terpilih (selected pair)', () => {
     manager.closeAll();
   });
 });
+
+describe('PeerConnectionManager — ketangguhan buffer & timer (Task 11-d)', () => {
+  it('antrean kandidat remote sebelum remoteDescription dibatasi 50 (drop terlama)', async () => {
+    const pc = new FakeRTCPeerConnection();
+    const wire = makeManager(sessionA.sessionId, pc);
+    wire.manager.addPeer(sessionB, true); // polite — menunggu offer, tanpa deskripsi lokal
+
+    // Peer jaringan mengirim 60 kandidat TANPA pernah mengirim deskripsi —
+    // semua tertahan di antrean (remoteDescription masih null).
+    for (let index = 1; index <= 60; index += 1) {
+      wire.manager.handleSignal({
+        v: 1,
+        type: 'ice',
+        from: sessionB.sessionId,
+        to: sessionA.sessionId,
+        candidate: `candidate:${String(index)} udp 2122265983 typ host`,
+        sdpMid: '0',
+        sdpMLineIndex: 0,
+        usernameFragment: null,
+      });
+    }
+
+    // Offer akhirnya tiba → remoteDescription terpasang → antrean di-flush.
+    wire.manager.handleSignal({
+      v: 1,
+      type: 'offer',
+      from: sessionB.sessionId,
+      to: sessionA.sessionId,
+      sdp: 'v=0\r\nfake-offer',
+    });
+    await flush();
+    await flush();
+
+    // Terbatas 50: 10 terlama dibuang, urutan sisanya terjaga (#11..#60).
+    expect(pc.candidates).toHaveLength(50);
+    expect((pc.candidates[0] as { candidate?: string }).candidate).toBe(
+      'candidate:11 udp 2122265983 typ host',
+    );
+    expect((pc.candidates[49] as { candidate?: string }).candidate).toBe(
+      'candidate:60 udp 2122265983 typ host',
+    );
+    wire.manager.closeAll();
+  });
+
+  it('flapping cepat tidak menumpuk timer re-sample — episode berakhir melepas timer', async () => {
+    // Jendela re-sample panjang (200ms): seluruh rangkaian blip selesai
+    // sinkron SEBELUM timer mana pun sempat menyala — deterministik.
+    const pc = new FakeRTCPeerConnection();
+    const pairs: Array<{ sessionId: string; localType: string; remoteType: string }> = [];
+    const manager = new PeerConnectionManager({
+      selfSessionId: sessionA.sessionId,
+      createPeerConnection: () => asPeerConnection(pc),
+      selectedPairResampleMs: 200,
+      onOutgoingSignal: () => undefined,
+      onTrack: () => undefined,
+      onConnectionState: () => undefined,
+      onPosition: () => undefined,
+      onSelectedPair: (sessionId, pair) => {
+        pairs.push({ sessionId, localType: pair.localType, remoteType: pair.remoteType });
+      },
+    });
+    manager.addPeer(sessionB, false);
+    pc.statsEntries = [
+      { id: 'L1', type: 'local-candidate', candidateType: 'host' },
+      { id: 'R1', type: 'remote-candidate', candidateType: 'host' },
+      {
+        id: 'P1',
+        type: 'candidate-pair',
+        localCandidateId: 'L1',
+        remoteCandidateId: 'R1',
+        state: 'succeeded',
+        nominated: true,
+        selected: true,
+      },
+    ];
+
+    // 6 episode 'connected' dipisah blip 'disconnected', semua sinkron.
+    for (let episode = 0; episode < 6; episode += 1) {
+      pc.simulateState({ connectionState: 'connected', iceConnectionState: 'connected' });
+      if (episode < 5) {
+        pc.simulateState({ connectionState: 'disconnected', iceConnectionState: 'disconnected' });
+      }
+    }
+
+    await flush(); // sampel segera tiap episode = rantai microtask murni
+    await new Promise((resolve) => setTimeout(resolve, 260)); // jendela re-sample terlewati
+    // 6 sampel segera + HANYA timer episode terakhir yang selamat = 7.
+    // Tanpa pembersihan saat episode berakhir: 6 timer usang ikut menyala = 12.
+    expect(pc.getStatsCalls).toBe(7);
+    // Pasangan tidak berubah sepanjang flapping → dedupe signature tetap bekerja.
+    expect(pairs).toHaveLength(1);
+    manager.closeAll();
+  });
+});

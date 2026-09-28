@@ -284,6 +284,16 @@ supabase/
   (nominasi lambat khas TURN); dedupe signature — tanpa info baru, tanpa
   emisi; `getStats` gagal = diam (observabilitas tidak boleh menjatuhkan
   koneksi); nol biaya bila tidak ada konsumen.
+- **Ketangguhan buffer & timer (Task 11-d)**: tiga perbaikan bedah minimal
+  dari audit empiris — (1) `dropPeer` kini juga membuang cache `positions`
+  (tidak bocor memori + peer yang rejoin tidak mewarisi posisi basi);
+  (2) antrean kandidat remote sebelum `remoteDescription` dibatasi 50/peer
+  drop-terlama-dulu (satu-satunya buffer yang dikendalikan pihak jaringan —
+  spam `ice` tanpa deskripsi tidak lagi menumbuhkan memori);
+  (3) timer re-sample pasangan terpilih dilepas saat episode `connected`
+  berakhir — peer yang flap cepat tidak menumpuk timer pending (invariant
+  ≤ 1 timer hidup per peer; dibuktikan mutation test: tanpa fix = 12 panggilan
+  getStats, dengan fix = 7).
 
 ### Catatan desain mesh (F1.3, direvisi F1.6)
 

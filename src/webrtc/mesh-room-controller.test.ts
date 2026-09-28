@@ -325,6 +325,29 @@ describe('MeshRoomController — posisi & media', () => {
     expect(events['remote-position']).toHaveLength(0);
   });
 
+  it('peer-left membersihkan cache posisi — rejoin tidak mewarisi posisi basi (Task 11-d)', async () => {
+    const { controller, events, pc, channel } = setup('lobby01', 'zzzz-self-9999');
+    await controller.join();
+    const peer = makePeerSession('aaaa-peer-0001');
+    channel().simulatePresence(peer);
+
+    const dc = new FakeRTCDataChannel('position');
+    pc(0).fire('datachannel', { channel: dc });
+    dc.deliver(JSON.stringify({ x: 3.5, y: -7 }));
+    expect(controller.getPeers()[0]?.lastPosition).toEqual({ x: 3.5, y: -7 });
+
+    // Peer pergi (presence hilang) → dropPeer harus ikut membuang posisinya.
+    channel().removePresence(peer.sessionId);
+    expect(events['peer-left']).toHaveLength(1);
+
+    // Peer yang sama bergabung lagi — posisi lama TIDAK boleh terbawa.
+    channel().simulatePresence(peer);
+    expect(events['peer-joined']).toHaveLength(2);
+    const rejoined = controller.getPeers()[0];
+    expect(rejoined?.lastPosition).toBeNull();
+    expect(rejoined?.lastPositionAt).toBeNull();
+  });
+
   it('attachLocalStream memasang track ke semua peer', async () => {
     const { controller, pc, channel } = setup('lobby01', 'zzzz-self-9999');
     await controller.join();
