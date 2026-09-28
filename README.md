@@ -3,8 +3,11 @@
 MVP web app sosial berbasis **voice chat dengan spatial audio real-time**
 (WebRTC mesh P2P, maks. 8 orang per room, lobby 2D dengan posisi avatar).
 
-> **Status: Fase 1 SELESAI (sistem inti, TANPA UI) + modul TURN Fase 2.**
+> **Status: Fase 1 SELESAI (sistem inti) + Fase 2: TURN/observabilitas &
+> LAPISAN LOGIKA FITUR SOSIAL (friends, chat, soundboard, voicefilter,
+> payment + migrasi + skeleton webhook Paddle) — semua TANPA UI.**
 > Audit DoD Fase 1 lengkap (bukti per item): lihat [`docs/dod-audit-fase1.md`](docs/dod-audit-fase1.md).
+> Status & pemetaan file Fase 2: lihat [`docs/fase-2-fitur-logika.md`](docs/fase-2-fitur-logika.md).
 > Sesuai keputusan pemilik produk: tidak ada satu baris kode UI pun sampai
 > Fase 3. Satu-satunya halaman di dev server adalah halaman status `/`
 > (infrastruktur) dan test harness `/test-harness/` (alat uji polos untuk
@@ -56,7 +59,9 @@ Aturan penting (keharusan Vite + keamanan):
 ## Testing
 
 - **Vitest** — unit test untuk logic murni (Zod schema, SDP munging,
-  kalkulasi posisi, cache). Tidak butuh browser. 230 test, 18 file.
+  kalkulasi posisi, cache). Tidak butuh browser. 597 test, 44 file
+  (termasuk `src/db/migrations.test.ts` — migrasi dieksekusi di PostgreSQL
+  asli via PGlite/WASM + RLS/grant/trigger diuji empiris).
 - **Playwright** — E2E via `test-harness/` (halaman HTML polos yang memuat
   modul sistem dan mengekspos fungsinya ke `window.__harness` supaya bisa
   dipanggil lewat `page.evaluate()`). Halaman ini sengaja tanpa styling —
@@ -221,9 +226,60 @@ src/
                    captureError dengan context terisolasi via withScope;
                    addTrail breadcrumb; flushMonitoring; semua helper
                    tidak pernah melempar)
-test-harness/    ✅ F1.6: alat uji polos — window.__harness (auth,
-                 profil+RLS probe, snippet, monitoring, mesh,
-                 audio smoke; semua method defensif, log di halaman)
+  friends/       ✅ Fase 2/12:
+                 types (Zod friendships/blocks/profil ringkas, filter
+                   kanonik SIMETRIS anti-injection uuid, error domain)
+                 friendship-service (send/accept/decline/cancel/unfriend,
+                   listFriends dua arah + profil, state 4 nilai; pemetaan
+                   23505/23514/trigger-blokir → kode error)
+                 block-service (block idempoten, unblock, daftar;
+                   RLS blocker-only dijaga migrasi 0008)
+  chat/          ✅ Fase 2/12:
+                 types (Zod body btrim 1–500 PERSIS constraint DB,
+                   baris snake_case, rantai struktural)
+                 rate-limiter (sliding window murni, jam di-inject,
+                   retryAfterMs, prune malas — default 10/30 dtk)
+                 message-service (kirim: rate → gate pertemanan → insert
+                   → revalidasi; percakapan dua arah, kursor before,
+                   hasil ASCENDING)
+  soundboard/    ✅ Fase 2/12:
+                 preset-sounds (katalog 8 id stabil — aset audio fisik
+                   menunggu Fase 3, TIDAK ada placeholder)
+                 custom-sound-service (bucket soundboard-sounds 5 MiB,
+                   5 MIME + peta ekstensi, mirror pola snippet)
+  voicefilter/   ✅ Fase 2/12:
+                 playback-rate-pitch-shift (naif: 2^(semitones/12),
+                   clamp ±24)
+                 pitch-worklet-processor.js (granular dual-tap:
+                   delay fraksional slope 1−ratio, jendela sin/cos
+                   kuadrat-jumlah-1, bypass identitas di |s|<0.01 —
+                   frekuensi terbukti zero-crossing ±5%)
+                 audio-worklet-pitch-shift (controller struktural,
+                   addModule sekali per context, transisi bypass ↔
+                   worklet idempoten, pabrik browser bebas-cast)
+  payment/       ✅ Fase 2/12:
+                 paddle-signature (verifikasi PERSIS docs resmi:
+                   ts;h1 multi-secret, HMAC-SHA256 crypto.subtle,
+                   timing-safe, toleransi 5 dtk — murni, Deno & Node)
+                 paddle-webhook (router event: transaction.completed →
+                 premium, subscription.canceled → non; core teruji)
+                 premium-status-service (baca is_premium + revalidasi)
+  db/            ✅ Fase 2/12 (test-only): migrations.test.ts — 13
+                 migrasi dijalankan di PGlite + idempotensi + matriks
+                 RLS + lockdown kolom is_premium + guard blokir
+supabase/
+  migrations/    0001–0006 (F1) + 0007–0013 (Fase 2: friendships+blocks+
+                 guard trigger, messages+RLS gate pertemanan, is_premium+
+                 lockdown column-grant, bucket soundboard + storage RLS)
+  functions/
+    paddle-webhook/ SKELETON Deno (di-ignore tsc/eslint proyek; import
+                 map terkunci + sloppy-imports; BELUM pernah dijalankan —
+                 butuh deploy + secrets, lihat header file)
+test-harness/    ✅ F1.6 + Fase 2/12: alat uji polos — window.__harness
+                 (auth, profil+RLS probe, snippet, monitoring, mesh,
+                 audio smoke, voicefilter: initPitchShift/setSemitones/
+                 dispose + pitchShiftMath; semua method defensif, log di
+                 halaman; voicefilter TANPA kredensial bisa diuji live)
 e2e/             ✅ F1.6: 17 spec Playwright (Chromium, workers=1,
                  helpers/qa-env.ts baca .env lokal — kredensial QA
                  tidak pernah masuk bundle browser; mesh-three-peers

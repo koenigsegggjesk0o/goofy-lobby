@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>goofy-lobby — Fase 1 selesai (tanpa UI)</title>
+    <title>goofy-lobby — Fase 1 selesai + lapisan logika Fase 2 (tanpa UI)</title>
   </head>
   <body>
     <!--
@@ -15,9 +15,10 @@
       juga bukan UI produk.
     -->
     <p>
-      goofy-lobby — Fase 1 SELESAI: lapisan sistem (WebRTC, spatial audio, Supabase) + TURN Fase 2,
-      tanpa UI (menunggu Fase 3). Audit DoD: docs/dod-audit-fase1.md. Test harness (alat uji
-      otomatis) tersedia di /test-harness/.
+      goofy-lobby — Fase 1 SELESAI (WebRTC, spatial audio, Supabase) + TURN Fase 2 + LAPISAN LOGIKA
+      FITUR FASE 2 (friends, chat, soundboard, voicefilter, payment), tanpa UI (menunggu Fase 3).
+      Audit DoD F1: docs/dod-audit-fase1.md; status &amp; pemetaan Fase 2:
+      docs/fase-2-fitur-logika.md. Test harness (alat uji otomatis) tersedia di /test-harness/.
     </p>
     <!-- Status modul sistem (F1.3 + F1.4 + F1.5) — murni teks info, bukan UI produk. -->
     <p>Modul sistem yang sudah ada (F1.3, tanpa UI):</p>
@@ -63,6 +64,24 @@
       </li>
       <li>
         monitoring/trail-log — ring lokal breadcrumb (teramati tanpa DSN, dibaca harness trailLog())
+      </li>
+    </ul>
+    <p>Modul lapisan logika Fase 2 (Task 12, tanpa UI):</p>
+    <ul>
+      <li>friends/ — friendship-service + block-service (kanonik, guard blokir DB, 82 test)</li>
+      <li>chat/ — rate-limiter (sliding window) + message-service (DM gate pertemanan, 52 test)</li>
+      <li>soundboard/ — preset-sounds (katalog) + custom-sound-service (bucket 5 MiB, 38 test)</li>
+      <li>
+        voicefilter/ — pitch shift granular dual-tap (AudioWorklet; frekuensi terbukti
+        zero-crossing; harness initPitchShift bisa diuji live tanpa kredensial)
+      </li>
+      <li>
+        payment/ — paddle-signature (verifikasi PERSIS docs resmi: HMAC-SHA256 timing-safe) + router
+        webhook + premium-status-service; skeleton Deno supabase/functions/paddle-webhook
+      </li>
+      <li>
+        db/migrations.test.ts — 13 migrasi dieksekusi di PostgreSQL asli (PGlite) + idempotensi +
+        matriks RLS + lockdown kolom is_premium
       </li>
     </ul>
     <p>

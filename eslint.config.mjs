@@ -20,6 +20,13 @@ export default tseslint.config(
       'mini-services',
       'download',
       'upload',
+      // Edge Function Deno — runtime terpisah, di-type-check saat deploy
+      // via Supabase CLI (bukan eslint/tsc proyek Vite).
+      'supabase/functions',
+      // Processor AudioWorklet — berjalan di AudioWorkletGlobalScope browser
+      // (globals registerProcessor/sampleRate/AudioWorkletProcessor tak dikenal
+      // eslint; file PLAIN JS by design, tanpa import).
+      'src/voicefilter/pitch-worklet-processor.js',
     ],
   },
   eslint.configs.recommended,

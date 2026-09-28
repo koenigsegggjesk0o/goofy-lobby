@@ -23,6 +23,9 @@
  *                  meshLog (presence + signaling + P2P dua konteks)
  *  - audio       : audioSmoke (engine spasial + listener + panner di
  *                  AudioContext asli browser)
+ *  - voicefilter : initPitchShift / setPitchShiftSemitones / disposePitchShift
+ *                  (AudioWorklet pitch-shift-processor asli browser — TANPA
+ *                  kredensial Supabase), pitchShiftMath (konversi murni)
  *
  * Token captcha default = dummy resmi Turnstile (test key selalu lolos) —
  * konfigurasi Auth Supabase proyek ini memakai test key hingga Fase 3.
@@ -41,6 +44,13 @@ import {
   type VoiceRecordingResult,
 } from '../src/profile';
 import { SpatialAudioEngine } from '../src/audio';
+import {
+  createBrowserPitchShiftController,
+  defaultPitchShiftProcessorUrl,
+  semitonesToPlaybackRate,
+  type PitchShiftRoute,
+  type PitchShiftWorkletController,
+} from '../src/voicefilter';
 import {
   addTrail,
   captureError,
@@ -240,6 +250,25 @@ interface AudioSmokeResult extends ErrorDetail {
   disposed: boolean;
 }
 
+interface PitchShiftInitResult extends ErrorDetail {
+  ok: boolean;
+  moduleUrl: string | null;
+  route: PitchShiftRoute | null;
+  contextState: string | null;
+}
+
+interface PitchShiftSetResult extends ErrorDetail {
+  ok: boolean;
+  semitones: number | null;
+  route: PitchShiftRoute | null;
+}
+
+interface PitchShiftMathResult extends ErrorDetail {
+  ok: boolean;
+  semitones: number | null;
+  rate: number | null;
+}
+
 /** Seluruh kemampuan harness (dipasang ke window.__harness). */
 export interface HarnessApi {
   envStatus(): {
@@ -281,6 +310,10 @@ export interface HarnessApi {
   meshLog(): MeshLogEntry[];
   trailLog(): TrailLogEntry[];
   audioSmoke(): Promise<AudioSmokeResult>;
+  initPitchShift(): Promise<PitchShiftInitResult>;
+  setPitchShiftSemitones(semitones: number): PitchShiftSetResult;
+  disposePitchShift(): { ok: boolean; message: string };
+  pitchShiftMath(semitones: number): PitchShiftMathResult;
 }
 
 declare global {
@@ -461,6 +494,9 @@ class Harness implements HarnessApi {
   #meshLog: MeshLogEntry[] = [];
   #mockMeshStreamCleanup: (() => void) | null = null;
   #pageLog: string[] = [];
+  #pitchShiftContext: AudioContext | null = null;
+  #pitchShiftController: PitchShiftWorkletController | null = null;
+  #pitchShiftSource: OscillatorNode | null = null;
 
   /** Log satu baris ber-stempel waktu ke halaman (pre#harness-log). */
   logLine(line: string): void {
@@ -1258,6 +1294,120 @@ class Harness implements HarnessApi {
     } finally {
       mock?.cleanup();
     }
+  }
+
+  // ============================================================
+  // Voice filter (Fase 2) — pitch shift AudioWorklet di BROWSER ASLI.
+  // Tanpa kredensial Supabase apa pun — bisa diverifikasi live kapan saja.
+  // ============================================================
+
+  async initPitchShift(): Promise<PitchShiftInitResult> {
+    try {
+      this.#disposePitchShiftNow();
+      const context = new AudioContext();
+      // Oscillator 440 Hz sebagai sumber uji — output DIKE-NOLKAN (gain 0):
+      // harness adalah alat uji, bukan pemutar audio (jangan bunyi di speaker).
+      const source = context.createOscillator();
+      source.frequency.value = 440;
+      const destination = context.createGain();
+      destination.gain.value = 0;
+      source.start();
+      const controller = await createBrowserPitchShiftController({
+        context,
+        source,
+        destination,
+      });
+      this.#pitchShiftContext = context;
+      this.#pitchShiftController = controller;
+      this.#pitchShiftSource = source;
+      const result: PitchShiftInitResult = {
+        ok: true,
+        moduleUrl: defaultPitchShiftProcessorUrl(),
+        route: controller.getRoute(),
+        contextState: context.state,
+        message: 'modul pitch-shift-processor termuat di browser',
+      };
+      this.logLine(
+        `initPitchShift: route=${result.route}, ctx=${result.contextState}, module=${result.moduleUrl}`,
+      );
+      return result;
+    } catch (error) {
+      return {
+        ok: false,
+        moduleUrl: null,
+        route: null,
+        contextState: null,
+        ...describeError(error),
+      };
+    }
+  }
+
+  setPitchShiftSemitones(semitones: number): PitchShiftSetResult {
+    const controller = this.#pitchShiftController;
+    if (controller === null) {
+      return {
+        ok: false,
+        semitones: null,
+        route: null,
+        message: 'pitch shift belum di-init — panggil initPitchShift() dulu',
+      };
+    }
+    try {
+      controller.setSemitones(semitones);
+      const result: PitchShiftSetResult = {
+        ok: true,
+        semitones: controller.getSemitones(),
+        route: controller.getRoute(),
+        message: 'semitones diterapkan',
+      };
+      this.logLine(`setPitchShiftSemitones: ${result.semitones} → route=${result.route}`);
+      return result;
+    } catch (error) {
+      return {
+        ok: false,
+        semitones: null,
+        route: controller.isDisposed ? null : controller.getRoute(),
+        ...describeError(error),
+      };
+    }
+  }
+
+  disposePitchShift(): { ok: boolean; message: string } {
+    try {
+      this.#disposePitchShiftNow();
+      return { ok: true, message: 'pitch shift dibersihkan' };
+    } catch (error) {
+      return { ok: false, message: describeError(error).message };
+    }
+  }
+
+  pitchShiftMath(semitones: number): PitchShiftMathResult {
+    try {
+      const rate = semitonesToPlaybackRate(semitones);
+      return {
+        ok: true,
+        semitones,
+        rate,
+        message: 'semitones → playbackRate (pendekatan naif)',
+      };
+    } catch (error) {
+      return { ok: false, semitones: null, rate: null, ...describeError(error) };
+    }
+  }
+
+  #disposePitchShiftNow(): void {
+    this.#pitchShiftController?.dispose();
+    this.#pitchShiftController = null;
+    try {
+      this.#pitchShiftSource?.stop();
+    } catch {
+      // abaikan — oscillator mungkin sudah berhenti
+    }
+    this.#pitchShiftSource = null;
+    this.#pitchShiftContext?.close().catch(() => {
+      // abaikan — context mungkin sudah tertutup
+    });
+    this.#pitchShiftContext = null;
   }
 }
 

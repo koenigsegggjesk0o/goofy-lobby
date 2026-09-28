@@ -39,8 +39,12 @@ $$;
 -- ---------------------------------------------------------------------------
 -- 2) Policy select: owner-only → authenticated (baca saja, scoped bucket).
 --    INSERT/DELETE tetap folder-per-user (0004 tidak diubah).
+--    (Perbaikan idempotensi — ditemukan uji PGlite Task 12-g: create policy
+--    tanpa drop-dulu memicu 42710 pada pass kedua, padahal header klaim
+--    idempotent.)
 -- ---------------------------------------------------------------------------
 drop policy if exists voice_snippets_select_own on storage.objects;
+drop policy if exists voice_snippets_select_authenticated on storage.objects;
 
 create policy voice_snippets_select_authenticated
   on storage.objects

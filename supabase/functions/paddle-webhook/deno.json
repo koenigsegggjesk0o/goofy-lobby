@@ -1,0 +1,14 @@
+{
+  // Import map Edge Function paddle-webhook — versi PERSIS sama dengan
+  // package.json proyek (jangan drift saat upgrade dependency).
+  "imports": {
+    "zod": "npm:zod@4.6.5",
+    "@supabase/supabase-js": "npm:@supabase/supabase-js@2.117.2"
+  },
+  // Modul src/payment memakai import relatif TANPA ekstensi file (konvensi
+  // tsc moduleResolution "bundler" proyek Vite) — Deno memerlukan
+  // sloppy-imports untuk me-resolve import tersebut saat deploy.
+  // Runtime Deno terpisah dari proyek; pemeriksaan tipe dilakukan via
+  // Supabase CLI saat deploy.
+  "unstable": ["sloppy-imports"]
+}
