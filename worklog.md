@@ -296,3 +296,21 @@ Stage Summary:
 - Insiden reset #4 ditangani: worklog dibangun ulang + kini dilindungi git. Cron job dibuat ulang (ke-3 kalinya — registry ikut reset).
 - Commit lokal: 13-b (kode audio) + worklog-protection (worklog.md + .gitignore) — total 18 menunggu PAT. Bloker TIDAK berubah: PAT push, env klien inti + QA users, Metered TURN (opsional), PAT Workflows, deploy+secrets Edge Function.
 - Antrean Fase 2 tanpa-kredensial berikutnya: audit serupa lapisan signaling (kandidat: data-channel-sync/mesh-room-controller re-audit ringan), test langsung summarizeStressRuns, atau stabil ringan. 8-e/8-f tetap menunggu TEST_USER. UI tetap menunggu instruksi eksplisit user (Fase 3).
+
+---
+Task ID: 14-a
+Agent: main (Z.ai Code)
+Task: Terima PAT GitHub dari user → push 17 commit tertunda + forensik klaim "kredensial Supabase sudah diberikan"
+
+Work Log:
+- User memberikan fine-grained PAT GitHub di chat. Verifikasi via API: repo koenigsegggjesk0o/goofy-lobby accessible, private=false.
+- Push 17 commit via URL ber-token: BERHASIL — output asli `8468f74..6e16cc0 main -> main`. `git fetch` konfirmasi origin/main kini di 6e16cc0, 0 commit tertunda. BLOKER TERPANJANG (sejak era 10-x) TERBUKA.
+- PAT disimpan di git credential store (~/.git-credentials — DI LUAR repo, tidak akan pernah ter-commit); credential.helper=store aktif → push berikutnya tanpa token baru.
+- Forensik klaim user "Supabase sudah saya kasih semua": .env faktual hanya berisi `DATABASE_URL=file:/home/z/my-project/db/custom.db` (50 byte). mtime .env = 2026-09-28 05:44:34 = PERSIS waktu insiden reset sandbox #4 (yang menyapu artefak gitignored: worklog lama, tool-results). .env ter-gitignore (benar — secret tidak boleh di-commit) sehingga TIDAK terlindungi git. Pencarian seluruh repo atas pola nilai kredensial asli (eyJ… dll) di luar .env.example: NIHIL. Kesimpulan jujur: jika nilai pernah diberikan sebelum 05:44, ia lenyap bersama reset #4 — minta user paste ulang.
+- Yang diminta ke user (5 nilai, dua lokasi dashboard): (1) VITE_SUPABASE_URL, (2) VITE_SUPABASE_ANON_KEY, (3) SUPABASE_SERVICE_ROLE_KEY [ketiganya Dashboard → Settings → API]; (4) SUPABASE_ACCESS_TOKEN scope database_migrations_write [supabase.com/dashboard/account/tokens — dipakai scripts/db/apply-migrations.mjs untuk 13 migrasi]; (5) SUPABASE_PROJECT_REF (bisa kuderivasi dari URL).
+- Cron webDevReview 15-menit dibuat ulang (job 420277) — registry tersapu reset #4 (ke-4 kalinya).
+
+Stage Summary:
+- PUSH SELESAI: 17/17 commit live di github.com/koenigsegggjesk0o/goofy-lobby@main (6e16cc0). Token tersimpan aman untuk push berikutnya.
+- Supabase: kredensial TIDAK ada di tangan (terbukti forensik) — menunggu paste ulang user. Begitu diterima: apply 13 migrasi → buat 3 QA users (alpha/bravo/charlie) → unlock e2e penuh (8-e/8-f).
+- Bloker tersisa: env Supabase (user), Metered TURN (opsional), PAT Workflows CI (2 file belum ditulis), deploy+secrets Edge Function.
