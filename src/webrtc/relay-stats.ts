@@ -37,6 +37,25 @@ export type IceCandidateType = 'host' | 'srflx' | 'prflx' | 'relay' | 'unknown';
 export interface SelectedPairInfo {
   localType: IceCandidateType;
   remoteType: IceCandidateType;
+  /**
+   * Protokol transport kandidat lokal (`protocol` pada stats local-candidate:
+   * 'udp' | 'tcp' di Chrome/Firefox). Untuk kandidat relay, ini protokol
+   * alamat relay TERHADAP peer — BUKAN protokol kaki klien→TURN (lihat
+   * `localRelayProtocol`). null bila browser tidak menyediakan field-nya.
+   */
+  localProtocol: string | null;
+  /** Protokol transport kandidat remote; null bila tidak hadir. */
+  remoteProtocol: string | null;
+  /**
+   * `relayProtocol` kandidat lokal — protokol kaki KLIEN→TURN SERVER
+   * ('udp' | 'tcp' | 'tls'; diekspos Chrome pada kandidat relay). Inilah
+   * bukti bahwa alokasi relay dibuat lewat TCP/TLS — jalur yang tetap hidup
+   * saat firewall memblokir UDP (P0-2 DoD). null bila bukan relay ATAU
+   * browser tidak menyediakan field-nya (Firefox lama).
+   */
+  localRelayProtocol: string | null;
+  /** `relayProtocol` kandidat remote — kaki PEER LAWAN→TURN server-nya. */
+  remoteRelayProtocol: string | null;
   state: string | null;
   nominated: boolean | null;
   /** `selected` eksplisit (Chrome); null bila browser tidak menyediakan. */
@@ -51,6 +70,20 @@ function candidateTypeOf(entry: StatsEntryLike): IceCandidateType {
     return value;
   }
   return 'unknown';
+}
+
+/** Baca protokol transport kandidat; null bila tidak hadir/bukan string. */
+function protocolOf(entry: StatsEntryLike | undefined): string | null {
+  if (entry === undefined) return null;
+  const value = entry.protocol;
+  return typeof value === 'string' && value !== '' ? value : null;
+}
+
+/** Baca relayProtocol kandidat (kaki klien→TURN server); null bila tidak hadir. */
+function relayProtocolOf(entry: StatsEntryLike | undefined): string | null {
+  if (entry === undefined) return null;
+  const value = entry.relayProtocol;
+  return typeof value === 'string' && value !== '' ? value : null;
 }
 
 function asString(value: unknown): string | null {
@@ -119,6 +152,10 @@ export function pickSelectedPair(entries: readonly StatsEntryLike[]): SelectedPa
   return {
     localType: local !== undefined ? candidateTypeOf(local) : 'unknown',
     remoteType: remote !== undefined ? candidateTypeOf(remote) : 'unknown',
+    localProtocol: protocolOf(local),
+    remoteProtocol: protocolOf(remote),
+    localRelayProtocol: relayProtocolOf(local),
+    remoteRelayProtocol: relayProtocolOf(remote),
     state: asString(pair.state),
     nominated: asBoolean(pair.nominated),
     selected: asBoolean(pair.selected),
@@ -134,4 +171,22 @@ export function pickSelectedPair(entries: readonly StatsEntryLike[]): SelectedPa
  */
 export function isSelectedPairRelay(pair: SelectedPairInfo): boolean {
   return pair.localType === 'relay';
+}
+
+/**
+ * true bila pasangan terpilih adalah relay YANG KAKINYA KE TURN SERVER
+ * bukan UDP (`relayProtocol` 'tcp' atau 'tls') — bukti bahwa koneksi tetap
+ * hidup melalui jalur yang selamat dari firewall blokir-UDP (P0-2 DoD:
+ * "session succeeds via relay setelah UDP diblokir").
+ *
+ * Kandidat relay dengan relayProtocol 'udp' → false (relay jalan, tapi lewat
+ * UDP — tidak membuktikan ketahanan terhadap blokir UDP). relayProtocol
+ * null (browser tanpa field tersebut) → false secara jujur: TIDAK ada bukti
+ * protokol kaki TURN, jangan diklaim.
+ */
+export function isSelectedPairRelayOverTcpOrTls(pair: SelectedPairInfo): boolean {
+  return (
+    pair.localType === 'relay' &&
+    (pair.localRelayProtocol === 'tcp' || pair.localRelayProtocol === 'tls')
+  );
 }

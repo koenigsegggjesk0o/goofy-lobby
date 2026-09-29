@@ -7,7 +7,7 @@ const self = makeSession({ sessionId: 'self-session-0001' });
 const remote = makeSession({ sessionId: 'remote-session-02' });
 
 function setup() {
-  const channel = new FakeRealtimeChannel('room:lobby01', {
+  const channel = new FakeRealtimeChannel('room:X8BBY001', {
     config: { presence: { key: self.sessionId } },
   });
   const onMessage = vi.fn();
@@ -121,7 +121,7 @@ describe('SignalingClient', () => {
   });
 
   it('melaporkan kegagalan pengiriman ke onSendError', async () => {
-    const channel = new FakeRealtimeChannel('room:lobby01');
+    const channel = new FakeRealtimeChannel('room:X8BBY001');
     channel.send = async () => 'error';
     const onSendError = vi.fn();
     const client = new SignalingClient({
@@ -177,7 +177,7 @@ describe('SignalingClient', () => {
   });
 
   it('send() yang di-reject channel dilaporkan ke onSendError (bukan unhandled)', async () => {
-    const channel = new FakeRealtimeChannel('room:lobby01');
+    const channel = new FakeRealtimeChannel('room:X8BBY001');
     channel.send = async () => {
       throw new Error('jaringan mati');
     };

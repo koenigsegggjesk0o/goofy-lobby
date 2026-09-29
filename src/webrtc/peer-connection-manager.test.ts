@@ -522,6 +522,29 @@ describe('PeerConnectionManager — pasangan terpilih (selected pair)', () => {
     wire.manager.closeAll();
   });
 
+  it('regresi audit 23-b M4: getStats resolve SETELAH removePeer → TIDAK ada emisi pasangan basi', async () => {
+    const wire = makePairManager();
+    wire.manager.addPeer(sessionB, false);
+    // getStats "menggantung" — resolve dikendalikan test (meniru stats lambat
+    // yang baru selesai SETELAH peer dilepas). Tanpa guard liveness, callback
+    // men-SET ULANG entri pasangan untuk sesi yang sudah pergi.
+    let releaseStats!: (entries: Array<Record<string, unknown>>) => void;
+    wire.pc.getStats = () =>
+      new Promise<Array<Record<string, unknown>>>((resolve) => {
+        releaseStats = resolve;
+      });
+    wire.pc.simulateState({ connectionState: 'connected', iceConnectionState: 'connected' });
+
+    // Peer dilepas SEBELUM stats resolve.
+    wire.manager.removePeer(sessionB.sessionId);
+    releaseStats(pairEntries('relay', 'relay'));
+    await flush();
+    await flush();
+
+    expect(wire.pairs).toHaveLength(0); // tidak ada emisi untuk sesi yang sudah pergi
+    wire.manager.closeAll();
+  });
+
   it('double-event transisi yang sama (connection+ice) → SATU sampel per episode', async () => {
     const wire = makePairManager();
     wire.manager.addPeer(sessionB, false);

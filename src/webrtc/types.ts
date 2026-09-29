@@ -30,11 +30,45 @@ export const SIGNAL_EVENT = 'signal';
 /** Label DataChannel khusus sinkronisasi posisi. */
 export const DATA_CHANNEL_LABEL = 'position';
 
+/**
+ * Alfabet kode room (P0-1): Crockford base-32 — 32 simbol, TANPA I/L/O/U
+ * supaya bebas karakter ambigu (O~0, I~1, l~1). Regex dan normalisasi di
+ * bawah HARUS identik dengan sisi server (0016_room_registry.sql:
+ * normalize_room_code + check rooms.code).
+ */
+const ROOM_CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'; // 32 simbol
+
 // ============================================================
 // Skema validasi (Zod) — semua payload lintas jaringan divalidasi
 // ============================================================
 
-export const RoomCodeSchema = z.string().regex(/^[a-z0-9]{4,12}$/);
+/**
+ * Kode room sah: 8 karakter dari alfabet Crockford-32 (tanpa I/L/O/U).
+ * Ruang kode = 32^8 = 2^40 ≈ 1,1 triliun — diterbitkan SERVER via
+ * create_room() (P0-1); kode lama 4 karakter ([a-z0-9]{4,12}, 36^4 ≈ 1,68
+ * juta) terbukti bisa di-enumerate untuk memanen SDP/ICE (IP) peserta.
+ */
+export const RoomCodeSchema = z
+  .string()
+  .regex(
+    new RegExp(`^[${ROOM_CODE_ALPHABET}]{8}$`),
+    'kode room harus 8 karakter [0-9A-Z] tanpa I/L/O/U',
+  );
+
+/**
+ * Normalisasi input kode room (P0-1) — ATURAN IDENTIK dengan SQL
+ * normalize_room_code di 0016_room_registry.sql:
+ *   uppercase → buang non-alfanumerik → O→0, I→1, L→1.
+ * Memaafkan salah baca karakter ambigu + pemisah ("7q2m-9xk4" → "7Q2M9XK4").
+ * Tidak menjamin valid — selalu lanjut RoomCodeSchema / validasi server.
+ */
+export function normalizeRoomCode(input: string): string {
+  return input
+    .toUpperCase()
+    .replace(/[^0-9A-Z]/g, '')
+    .replace(/O/g, '0')
+    .replace(/[IL]/g, '1');
+}
 
 export const SessionIdSchema = z.string().min(8).max(64);
 
@@ -142,11 +176,15 @@ export interface MeshRoomEventMap {
 /**
  * Sub-kemampuan SupabaseClient yang dibutuhkan mesh room — structural typing
  * supaya SupabaseClient asli lolos tanpa adaptasi, dan test bisa menyuntik fake.
+ * `private: true` (P0-1): channel diotorisasi RLS realtime.messages —
+ * didukung supabase-js ≥ 2.44.0 (proyek memakai 2.117.2).
  */
 export interface SupabaseRealtimeLike {
   channel(
     topic: string,
-    options?: { config?: { presence?: { key?: string; enabled?: boolean } } },
+    options?: {
+      config?: { private?: boolean; presence?: { key?: string; enabled?: boolean } };
+    },
   ): RealtimeChannel;
   removeChannel?(channel: RealtimeChannel): Promise<unknown>;
 }

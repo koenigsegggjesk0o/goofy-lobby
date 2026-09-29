@@ -63,7 +63,9 @@ import {
 } from '../src/monitoring';
 import {
   MeshRoomController,
+  RoomGate,
   isSelectedPairRelay,
+  isSelectedPairRelayOverTcpOrTls,
   readTurnEnvFromVite,
   resolveIceServers,
   type PeerState,
@@ -207,10 +209,16 @@ interface MeshLeaveResult extends ErrorDetail {
 interface MeshPeerSelectedPair {
   localType: string;
   remoteType: string;
+  /** Protokol transport kandidat lokal (kaki kandidat ke peer). */
+  localProtocol: string | null;
+  /** Protokol kaki klien→TURN server ('tcp'/'tls' = tahan blokir-UDP). */
+  localRelayProtocol: string | null;
   state: string | null;
   nominated: boolean | null;
   selected: boolean | null;
   viaRelay: boolean;
+  /** Relay yang kakinya ke TURN bukan UDP — bukti ketahanan blokir-UDP (P0-2). */
+  viaRelayTcpTls: boolean;
 }
 
 interface MeshPeerSnapshot {
@@ -302,7 +310,13 @@ export interface HarnessApi {
   verifySentryIngest(): Promise<IngestResult>;
   joinMesh(
     roomCode: string,
-    opts?: { displayName?: string; avatarColor?: string; attachMockStream?: boolean },
+    opts?: {
+      displayName?: string;
+      avatarColor?: string;
+      attachMockStream?: boolean;
+      /** P0-1: true = HOST — room diterbitkan server (kode acak 8 char). */
+      createRoom?: boolean;
+    },
   ): Promise<MeshJoinResult>;
   leaveMesh(): Promise<MeshLeaveResult>;
   meshState(): MeshStateResult;
@@ -417,10 +431,13 @@ function toSelectedPairSummary(pair: SelectedPairInfo | null): MeshPeerSelectedP
   return {
     localType: pair.localType,
     remoteType: pair.remoteType,
+    localProtocol: pair.localProtocol,
+    localRelayProtocol: pair.localRelayProtocol,
     state: pair.state,
     nominated: pair.nominated,
     selected: pair.selected,
     viaRelay: isSelectedPairRelay(pair),
+    viaRelayTcpTls: isSelectedPairRelayOverTcpOrTls(pair),
   };
 }
 
@@ -487,6 +504,7 @@ class Harness implements HarnessApi {
   #lastRecording: VoiceRecordingResult | null = null;
   #mesh: {
     controller: MeshRoomController;
+    gate: RoomGate;
     roomCode: string;
     sessionId: string;
     self: SessionInfo;
@@ -1085,8 +1103,18 @@ class Harness implements HarnessApi {
 
   async joinMesh(
     roomCode: string,
-    opts: { displayName?: string; avatarColor?: string; attachMockStream?: boolean } = {},
+    opts: {
+      displayName?: string;
+      avatarColor?: string;
+      attachMockStream?: boolean;
+      createRoom?: boolean;
+    } = {},
   ): Promise<MeshJoinResult> {
+    // P0-1: gerbang registri room SERVER-SIDE. Konstruksinya di DALAM try
+    // (kontrak harness: tidak pernah melempar — env kosong harus jadi
+    // {ok:false}, bukan exception) + variabel cleanup terpisah supaya
+    // heartbeat tidak menggantung bila controller.join() gagal.
+    let gateForCleanup: RoomGate | null = null;
     try {
       if (this.#mesh !== null) {
         return {
@@ -1113,6 +1141,18 @@ class Harness implements HarnessApi {
       addTrail('mesh join attempt', { roomCode, turnStatus }, 'mesh');
       const userId = await this.#requireUserId();
       const profile = await this.#services().profiles.getProfile(userId);
+      // P0-1: HOST → kode diterbitkan server (create_room); TAMU → kode
+      // divalidasi + di-rate-limit di database (join_room). Tanpa tiket,
+      // subscribe channel private ditolak server (RLS realtime.messages).
+      const gate = new RoomGate({
+        supabase: getAppSupabase(),
+        onHeartbeatError: (error) =>
+          this.#pushMeshLog('heartbeat-error', { error: describeError(error).message }),
+      });
+      gateForCleanup = gate;
+      const code =
+        opts.createRoom === true ? await gate.createRoom() : await gate.joinRoom(roomCode);
+      this.logLine(`joinMesh: room gate ok (kode ${code})`);
       const sessionId = `harness-${crypto.randomUUID().slice(0, 8)}`;
       const self: SessionInfo = {
         sessionId,
@@ -1122,7 +1162,7 @@ class Harness implements HarnessApi {
       };
       const controller = new MeshRoomController({
         supabase: this.#instrumentSupabase(),
-        roomCode,
+        roomCode: code,
         self,
         iceServers,
       });
@@ -1172,11 +1212,12 @@ class Harness implements HarnessApi {
         this.#mockMeshStreamCleanup = mock.cleanup;
       }
       await controller.join();
-      this.#mesh = { controller, roomCode, sessionId, self };
-      this.logLine(`joinMesh('${roomCode}'): sessionId=${sessionId}`);
-      addTrail('mesh join ok', { roomCode, sessionId }, 'mesh');
-      return { ok: true, sessionId, roomCode, message: 'join room ok' };
+      this.#mesh = { controller, gate, roomCode: code, sessionId, self };
+      this.logLine(`joinMesh('${code}'): sessionId=${sessionId}`);
+      addTrail('mesh join ok', { roomCode: code, sessionId }, 'mesh');
+      return { ok: true, sessionId, roomCode: code, message: 'join room ok' };
     } catch (error) {
+      gateForCleanup?.dispose(); // jangan tinggalkan heartbeat utk room yang gagal dijoin
       this.#mockMeshStreamCleanup?.();
       this.#mockMeshStreamCleanup = null;
       return { ok: false, sessionId: null, roomCode: null, ...describeError(error) };
@@ -1190,6 +1231,15 @@ class Harness implements HarnessApi {
       }
       addTrail('mesh leave attempt', { roomCode: this.#mesh.roomCode }, 'mesh');
       await this.#mesh.controller.leave();
+      // P0-1: hapus tiket kepesertaan di server (best-effort — TTL 1 jam
+      // membersihkan sisa bila RPC ini gagal).
+      try {
+        await this.#mesh.gate.leaveRoom();
+      } catch (error) {
+        this.logLine(
+          `leaveMesh: gate leave gagal (TTL server akan membersihkan) — ${describeError(error).message}`,
+        );
+      }
       this.#mockMeshStreamCleanup?.();
       this.#mockMeshStreamCleanup = null;
       this.#mesh = null;

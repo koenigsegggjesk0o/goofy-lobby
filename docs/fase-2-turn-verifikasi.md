@@ -82,6 +82,54 @@ menyelamatkan koneksi yang nyaris mati; `false` = jalur langsung lebih
 baik (normal, bukan kegagalan TURN). Bukti "TURN mampu merelay" tetap
 lewat `probe:webrtc --turn` (relay-forced).
 
+## Validasi TANPA akun eksternal (P0-2): TURN server lokal
+
+Sejak P0-2, seluruh rantai verifikasi bisa dijalankan offline melalui TURN
+server lokal (paket `turn-server` — devDependency, murni JS):
+
+```bash
+bun scripts/dev/local-turn-server.mjs &   # 127.0.0.1:3478 udp+tcp, kredensial uji localprobe
+
+# (1) jalur relay normal (UDP)
+VITE_TURN_URL="turn:127.0.0.1:3478" \
+  VITE_TURN_USERNAME=localprobe VITE_TURN_CREDENTIAL=localprobe \
+  bun scripts/dev/probe-webrtc.mjs --turn
+
+# (2) simulasi firewall BLOKIR-UDP (DoD P0-2)
+VITE_TURN_URL="turn:127.0.0.1:3478?transport=tcp" \
+  VITE_TURN_USERNAME=localprobe VITE_TURN_CREDENTIAL=localprobe \
+  bun scripts/dev/probe-webrtc.mjs --turn --turn-tcp
+
+kill %1
+```
+
+Mode `--turn --turn-tcp` menolak URL yang kakinya UDP ke server (exit 2) dan
+hanya menyatakan sukses bila pasangan terpilih tiap run terbukti relay dengan
+`relayProtocol` tcp/tls — bukti programatik bahwa sesi tetap hidup melalui
+jalur yang selamat dari blokir UDP. Bukti `getStats` ini ekuivalen dengan
+tampilan `chrome://webrtc-internals` (sumber data sama: RTCStatsReport).
+Kernel-level blokir UDP tidak dimungkinkan di sandbox (tanpa root/iptables);
+pembatasan dipaksakan di lapisan ICE — jalur kode yang sama dengan yang
+dipicu firewall nyata.
+
+Hasil terverifikasi (29 Sep 2026, Chromium via Playwright):
+
+- `(1)` → `TURN RELAY TERVERIFIKASI ✅ … relayProto=udp`
+- `(2)` → `TURN RELAY TCP/TLS TERVERIFIKASI ✅ … relayProto=tcp`
+  (pasangan `A=relay B=relay state=succeeded nominated=true`)
+
+### Patch `patches/turn-server@0.6.6.patch`
+
+Paket `turn-server@0.6.6` menulis ChannelData ke koneksi TCP TANPA padding
+kelipatan-4 — melanggar RFC 5766 §11.5 ("MUST be padded to a multiple of
+four bytes… not reflected in the length field") sehingga parser stream
+Chromium desinkron dan SEMUA pesan TURN berikutnya dibuang (terbukti
+byte-level: 26/443 tulisan ChannelData tak ber-padding; ICE selalu `failed`
+walau relaying dua arah sebenarnya terjadi). Patch menambah padding di
+`encode_channel_data` — sah untuk UDP juga (padding opsional di sana).
+Bug ini TIDAK menyentuh jalur produksi (TURN eksternal/cloud);
+hanya alat validasi dev.
+
 ## Status verifikasi saat dokumen ini ditulis (Task 11-a)
 
 - Jalur `disabled` / `invalid` / `enabled` — terverifikasi live di sandbox

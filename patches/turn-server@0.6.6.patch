@@ -1,0 +1,22 @@
+diff --git a/src/wire.js b/src/wire.js
+index b6e1e566f3dc790cbfd4950478ecb20b961ceed1..f15ab31ca44d77d6343dbdfc229cd71b60eca718 100644
+--- a/src/wire.js
++++ b/src/wire.js
+@@ -916,7 +916,16 @@ function validateStunMessage(buf, password) {
+ /* ========================= ChannelData / detect ========================== */
+ 
+ function encode_channel_data(channel_number, data) {
+-  var out = new Uint8Array(4 + data.length);
++  // RFC 5766 §11.5 / RFC 8656 §11.4 — over TCP/TLS the ChannelData message
++  // MUST be padded to a multiple of four bytes so the receiver can locate
++  // the next message boundary; the padding is NOT counted in the Length
++  // field. Over UDP padding is optional but allowed ("MAY be included"),
++  // so padding unconditionally is compliant on both transports. Without
++  // this, any data.length where (4 + length) % 4 !== 0 desynchronizes the
++  // receiver's stream parser (observed: Chromium drops every TURN message
++  // after the first unpadded ChannelData on the TCP control connection).
++  var padded = data.length + ((4 - (data.length % 4)) % 4);
++  var out = new Uint8Array(4 + padded);
+   w_u16(out, 0, channel_number);
+   w_u16(out, 2, data.length);
+   w_bytes(out, 4, data);

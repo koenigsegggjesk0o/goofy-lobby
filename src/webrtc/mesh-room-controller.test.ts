@@ -41,7 +41,7 @@ function makePeerSession(sessionId: string): SessionInfo {
   return makeSession({ sessionId });
 }
 
-function setup(roomCode = 'lobby01', selfId = 'aaaa-self-0001') {
+function setup(roomCode = 'X8BBY001', selfId = 'aaaa-self-0001') {
   const fakeSupabase = new FakeSupabase();
   const self = makeSession({ sessionId: selfId, displayName: 'Diri Sendiri' });
   const pcs: FakeRTCPeerConnection[] = [];
@@ -101,7 +101,7 @@ describe('MeshRoomController — validasi konstruktor', () => {
       () =>
         new MeshRoomController({
           supabase,
-          roomCode: 'lobby01',
+          roomCode: 'X8BBY001',
           self: { ...makeSession(), displayName: '' },
           createPeerConnection: () => asPeerConnection(new FakeRTCPeerConnection()),
         }),
@@ -110,15 +110,24 @@ describe('MeshRoomController — validasi konstruktor', () => {
 });
 
 describe('MeshRoomController — join', () => {
-  it('join: channel dibuat dengan presence key = sessionId, lalu track', async () => {
+  it('join: channel PRIVATE dibuat dengan presence key = sessionId, lalu track', async () => {
     const { self, controller, channel } = setup();
 
     await controller.join();
 
-    expect(channel().topic).toBe('room:lobby01');
+    expect(channel().topic).toBe('room:X8BBY001');
+    expect(channel().isPrivate).toBe(true); // P0-1: wajib private (RLS realtime)
     expect(channel().presenceKey).toBe(self.sessionId);
     expect(channel().subscribed).toBe(true);
     expect(channel().trackPayloads).toEqual([{ ...self }]);
+  });
+
+  it('P0-1: room code dinormalisasi sebelum jadi topic channel (paritas SQL 0016)', async () => {
+    const { controller, channel } = setup(' x8bby-001 ');
+
+    await controller.join();
+
+    expect(channel().topic).toBe('room:X8BBY001');
   });
 
   it('join gagal bila channel error → error jelas, tidak ada track', async () => {
@@ -127,6 +136,29 @@ describe('MeshRoomController — join', () => {
 
     await expect(controller.join()).rejects.toThrow(/CHANNEL_ERROR/);
     expect(channel().trackPayloads).toHaveLength(0);
+  });
+
+  it('regresi audit 23-b M1: status CLOSED saat join → REJECT (bukan menggantung selamanya)', async () => {
+    const { controller, channel } = setup();
+    channel().subscribeStatus = 'CLOSED';
+
+    // Tanpa fix, Promise subscribe tidak pernah settle untuk CLOSED — test
+    // ini akan TIMEOUT (bukan reject) sebagai bukti regresi.
+    await expect(controller.join()).rejects.toThrow(/CLOSED/);
+    expect(channel().trackPayloads).toHaveLength(0);
+  });
+
+  it('regresi audit 23-b M2: join gagal → channel DIBUANG + unsubscribe (tidak bocor di client bersama)', async () => {
+    const { controller, channel, supabase } = setup();
+    channel().subscribeStatus = 'CHANNEL_ERROR';
+
+    await expect(controller.join()).rejects.toThrow(/CHANNEL_ERROR/);
+    expect(channel().unsubscribed).toBe(true);
+    expect(supabase.removedChannels).toHaveLength(1);
+    expect(supabase.removedChannels[0]).toBe(channel());
+    // Handler presence tidak lagi akan menyala untuk channel mati — bukti
+    // tambahan: tidak ada punya efek samping saat fireSync dipanggil.
+    expect(() => channel().fireSync()).not.toThrow();
   });
 
   it('join kedua kali melempar error', async () => {
@@ -138,7 +170,7 @@ describe('MeshRoomController — join', () => {
 
 describe('MeshRoomController — penemuan peer', () => {
   it('peer dengan id lebih besar → kita jadi inisiator: offer terkirim', async () => {
-    const { controller, events, pcs, channel } = setup('lobby01', 'aaaa-self-0001');
+    const { controller, events, pcs, channel } = setup('X8BBY001', 'aaaa-self-0001');
     await controller.join();
 
     const peer = makePeerSession('zzzz-peer-0002');
@@ -156,7 +188,7 @@ describe('MeshRoomController — penemuan peer', () => {
   });
 
   it('peer dengan id lebih kecil → kita menunggu, tidak menawar', async () => {
-    const { controller, pcs, pc, channel } = setup('lobby01', 'zzzz-self-9999');
+    const { controller, pcs, pc, channel } = setup('X8BBY001', 'zzzz-self-9999');
     await controller.join();
 
     channel().simulatePresence(makePeerSession('aaaa-peer-0001'));
@@ -229,7 +261,7 @@ describe('MeshRoomController — penemuan peer', () => {
 
 describe('MeshRoomController — kapasitas room', () => {
   it('room penuh dan diri sendiri di luar cap → event room-full + auto-leave', async () => {
-    const { controller, events, channel, supabase } = setup('lobby01', 'zzzz-self-9999');
+    const { controller, events, channel, supabase } = setup('X8BBY001', 'zzzz-self-9999');
     await controller.join();
 
     for (let index = 0; index < 8; index += 1) {
@@ -247,7 +279,7 @@ describe('MeshRoomController — kapasitas room', () => {
   });
 
   it('room melebihi cap tapi diri sendiri masuk → hanya 7 peer terpilih deterministik', async () => {
-    const { controller, events, pcs, channel } = setup('lobby01', 'aaaa-self-0001');
+    const { controller, events, pcs, channel } = setup('X8BBY001', 'aaaa-self-0001');
     await controller.join();
 
     // 8 peer lain + diri = 9 sesi; cap 8 → 'iiii-p8' tersingkir.
@@ -270,11 +302,62 @@ describe('MeshRoomController — kapasitas room', () => {
     expect(pcs).toHaveLength(7);
     expect(controller.getPeers().map((peer) => peer.sessionId)).not.toContain('iiii-p8-xxxx');
   });
+
+  it('regresi audit 23-b M3: room-full auto-leave di sela track() → join() REJECT (bukan sukses palsu)', async () => {
+    // Diri 'zzzz-self-9999' urut paling akhir → saat 8 peer lain masuk
+    // presence, diri berada DI LUAR set kapasitas deterministik.
+    const { controller, events, channel, supabase } = setup('X8BBY001', 'zzzz-self-9999');
+
+    // Presence 8 peer DIPRA-SIAPKAN sebelum join — fake track() memicu
+    // fireSync saat melacak diri: inilah jendela race M3 (auto-leave
+    // berjalan DI SELA await track()). Tanpa fix, join() resolve SUKSES
+    // padahal controller sudah 'left' + channel dibuang.
+    for (let index = 0; index < 8; index += 1) {
+      const id = `peer-${String(index).padStart(4, '0')}-xxxx`;
+      channel().presence.set(id, makePeerSession(id));
+    }
+
+    await expect(controller.join()).rejects.toThrow(/room penuh|keluar otomatis/);
+    expect(events['room-full']).toEqual([{ size: 9, max: 8 }]);
+    await vi.waitFor(() => expect(supabase.removedChannels).toHaveLength(1));
+  });
+
+  it('regresi audit 23-b M6: self-heal di kapasitas penuh TIDAK melempar + tidak menambah peer', async () => {
+    const { controller, pcs, channel } = setup('X8BBY001', 'aaaa-self-0001');
+    await controller.join();
+
+    // 7 peer remote = kapasitas penuh (MAX_ROOM_SIZE 8 termasuk diri).
+    const ids = ['bbbb-p1', 'cccc-p2', 'dddd-p3', 'eeee-p4', 'ffff-p5', 'gggg-p6', 'hhhh-p7'];
+    for (const id of ids) {
+      channel().presence.set(`${id}-xxxx`, makePeerSession(`${id}-xxxx`));
+    }
+    channel().fireSync();
+    expect(pcs).toHaveLength(7);
+
+    // Peer ke-8 valid di presence mengirim offer lewat jalur self-heal
+    // (belum terdaftar oleh sync). Tanpa fix: addPeer MELEMPAR "kapasitas
+    // mesh tercapai" dan exception menyebar keluar handler broadcast.
+    const extra = 'zzzz-peer-0008';
+    channel().presence.set(extra, makePeerSession(extra));
+    expect(() =>
+      channel().deliverSignal({
+        v: 1,
+        type: 'offer',
+        from: extra,
+        to: 'aaaa-self-0001',
+        sdp: 'v=0\r\nfake-offer',
+      }),
+    ).not.toThrow();
+    await flush();
+
+    expect(pcs).toHaveLength(7); // peer ke-8 TIDAK ditambahkan
+    expect(controller.getPeers().map((peer) => peer.sessionId)).not.toContain(extra);
+  });
 });
 
 describe('MeshRoomController — posisi & media', () => {
   it('setLocalPosition di-clamp + throttle 15 Hz per peer', async () => {
-    const { controller, pc, channel } = setup('lobby01', 'aaaa-self-0001');
+    const { controller, pc, channel } = setup('X8BBY001', 'aaaa-self-0001');
     await controller.join();
     channel().simulatePresence(makePeerSession('zzzz-peer-0002'));
     const dc = pc(0).dataChannels[0];
@@ -291,7 +374,7 @@ describe('MeshRoomController — posisi & media', () => {
   });
 
   it('posisi remote → event remote-position + tercatat di getPeers', async () => {
-    const { controller, events, pc, channel } = setup('lobby01', 'zzzz-self-9999');
+    const { controller, events, pc, channel } = setup('X8BBY001', 'zzzz-self-9999');
     await controller.join();
     const peer = makePeerSession('aaaa-peer-0001');
     channel().simulatePresence(peer);
@@ -312,7 +395,7 @@ describe('MeshRoomController — posisi & media', () => {
   });
 
   it('posisi remote tidak valid → event invalid-position, tidak diteruskan', async () => {
-    const { controller, events, pc, channel } = setup('lobby01', 'zzzz-self-9999');
+    const { controller, events, pc, channel } = setup('X8BBY001', 'zzzz-self-9999');
     await controller.join();
     channel().simulatePresence(makePeerSession('aaaa-peer-0001'));
 
@@ -326,7 +409,7 @@ describe('MeshRoomController — posisi & media', () => {
   });
 
   it('peer-left membersihkan cache posisi — rejoin tidak mewarisi posisi basi (Task 11-d)', async () => {
-    const { controller, events, pc, channel } = setup('lobby01', 'zzzz-self-9999');
+    const { controller, events, pc, channel } = setup('X8BBY001', 'zzzz-self-9999');
     await controller.join();
     const peer = makePeerSession('aaaa-peer-0001');
     channel().simulatePresence(peer);
@@ -349,7 +432,7 @@ describe('MeshRoomController — posisi & media', () => {
   });
 
   it('attachLocalStream memasang track ke semua peer', async () => {
-    const { controller, pc, channel } = setup('lobby01', 'zzzz-self-9999');
+    const { controller, pc, channel } = setup('X8BBY001', 'zzzz-self-9999');
     await controller.join();
     channel().simulatePresence(makePeerSession('aaaa-peer-0001'));
 
@@ -361,7 +444,7 @@ describe('MeshRoomController — posisi & media', () => {
   });
 
   it('track remote masuk → event remote-stream', async () => {
-    const { controller, events, pc, channel } = setup('lobby01', 'zzzz-self-9999');
+    const { controller, events, pc, channel } = setup('X8BBY001', 'zzzz-self-9999');
     await controller.join();
     channel().simulatePresence(makePeerSession('aaaa-peer-0001'));
 
@@ -373,7 +456,7 @@ describe('MeshRoomController — posisi & media', () => {
   });
 
   it('perubahan state koneksi → event peer-state', async () => {
-    const { controller, events, pc, channel } = setup('lobby01', 'zzzz-self-9999');
+    const { controller, events, pc, channel } = setup('X8BBY001', 'zzzz-self-9999');
     await controller.join();
     channel().simulatePresence(makePeerSession('aaaa-peer-0001'));
 
@@ -481,7 +564,7 @@ describe('MeshRoomController — pasangan terpilih (selected pair)', () => {
   }
 
   it('peer connected dengan pasangan host/host → event selected-pair viaRelay=false + snapshot getPeers', async () => {
-    const { controller, events, pc, channel } = setup('lobby01', 'aaaa-self-0001');
+    const { controller, events, pc, channel } = setup('X8BBY001', 'aaaa-self-0001');
     await controller.join();
     const peer = makePeerSession('zzzz-peer-0002');
     channel().simulatePresence(peer);
@@ -505,7 +588,7 @@ describe('MeshRoomController — pasangan terpilih (selected pair)', () => {
   });
 
   it('pasangan relay/relay → viaRelay=true (bukti TURN aktif di jalur nyata)', async () => {
-    const { controller, events, pc, channel } = setup('lobby01', 'aaaa-self-0001');
+    const { controller, events, pc, channel } = setup('X8BBY001', 'aaaa-self-0001');
     await controller.join();
     const peer = makePeerSession('zzzz-peer-0002');
     channel().simulatePresence(peer);
@@ -522,7 +605,7 @@ describe('MeshRoomController — pasangan terpilih (selected pair)', () => {
   });
 
   it('belum pernah connected → snapshot selectedPair null (bukan undefined)', async () => {
-    const { controller, channel } = setup('lobby01', 'aaaa-self-0001');
+    const { controller, channel } = setup('X8BBY001', 'aaaa-self-0001');
     await controller.join();
     const peer = makePeerSession('zzzz-peer-0002');
     channel().simulatePresence(peer);
@@ -535,7 +618,7 @@ describe('MeshRoomController — pasangan terpilih (selected pair)', () => {
   });
 
   it('peer-left membersihkan cache — peer yang sama bergabung lagi mulai dari null', async () => {
-    const { controller, events, pc, channel } = setup('lobby01', 'aaaa-self-0001');
+    const { controller, events, pc, channel } = setup('X8BBY001', 'aaaa-self-0001');
     await controller.join();
     const peer = makePeerSession('zzzz-peer-0002');
     channel().simulatePresence(peer);

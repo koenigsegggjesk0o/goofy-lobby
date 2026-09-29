@@ -6,3 +6,5 @@ test-results
 coverage
 dist
 Caddyfile
+worklog.md
+tool-results

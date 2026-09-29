@@ -9,6 +9,7 @@ import {
   RoomCodeSchema,
   SessionInfoSchema,
   clampPosition,
+  normalizeRoomCode,
   type MeshRoomEventMap,
   type PeerState,
   type Position,
@@ -67,9 +68,14 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
 
   constructor(options: MeshRoomControllerOptions) {
     super();
-    const roomCode = RoomCodeSchema.safeParse(options.roomCode);
+    // P0-1: input dinormalisasi dulu (uppercase + strip + O/I/L → 0/1/1 —
+    // aturan identik dengan SQL normalize_room_code) supaya topic channel
+    // SELALU cocok dengan kode yang disimpan server di room_participants.
+    const roomCode = RoomCodeSchema.safeParse(normalizeRoomCode(options.roomCode));
     if (!roomCode.success) {
-      throw new Error(`room code tidak valid: ${options.roomCode} (harus [a-z0-9]{4,12})`);
+      throw new Error(
+        `room code tidak valid: ${options.roomCode} (harus 8 karakter [0-9A-Z] tanpa I/L/O/U)`,
+      );
     }
     const self = SessionInfoSchema.safeParse(options.self);
     if (!self.success) {
@@ -80,8 +86,14 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
     this.supabase = options.supabase;
     this.self = self.data;
     this.now = options.now ?? Date.now;
-    this.channel = options.supabase.channel(`room:${options.roomCode}`, {
-      config: { presence: { key: this.self.sessionId } },
+    // P0-1: channel PRIVATE — server menolak subscribe tanpa tiket
+    // kepesertaan (RLS realtime.messages, 0017). Subscribe tanpa otorisasi
+    // → CHANNEL_ERROR "Unauthorized: You do not have permissions to read
+    // from this Channel topic: room:{kode}" → SDP/ICE (IP) tidak bocor.
+    // Topic MEMAKAI kode ternormalisasi (roomCode.data) supaya selalu cocok
+    // dengan kode yang disimpan server di room_participants.
+    this.channel = options.supabase.channel(`room:${roomCode.data}`, {
+      config: { private: true, presence: { key: this.self.sessionId } },
     });
     this.signaling = new SignalingClient({
       channel: this.channel,
@@ -138,7 +150,9 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
 
   /**
    * Berlangganan channel room + mulai melacak presence.
-   * Melempar bila subscribe gagal (CHANNEL_ERROR/TIMED_OUT) atau track gagal.
+   * Melempar bila subscribe gagal (CHANNEL_ERROR/TIMED_OUT/CLOSED) atau
+   * track gagal, atau bila room-full auto-leave menang di sela track
+   * (audit 23-b M1/M3).
    */
   async join(): Promise<void> {
     if (this.state === 'joined') {
@@ -149,19 +163,53 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
     }
     this.signaling.bind();
     this.channel.on('presence', { event: 'sync' }, () => this.handlePresenceSync());
-    await new Promise<void>((resolve, reject) => {
-      this.channel.subscribe((status, err) => {
-        if (status === 'SUBSCRIBED') {
-          resolve();
-        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-          reject(
-            new Error(`gagal subscribe channel room: ${status}${err ? ` — ${String(err)}` : ''}`),
-          );
-        }
+    try {
+      await new Promise<void>((resolve, reject) => {
+        this.channel.subscribe((status, err) => {
+          if (status === 'SUBSCRIBED') {
+            resolve();
+          } else if (
+            // Audit 23-b M1: 'CLOSED' (channel ditutup pihak server saat join
+            // berjalan) HARUS ditangani — tanpa ini Promise tidak pernah
+            // settle dan await join() menggantung selamanya.
+            status === 'CHANNEL_ERROR' ||
+            status === 'TIMED_OUT' ||
+            status === 'CLOSED'
+          ) {
+            reject(
+              new Error(`gagal subscribe channel room: ${status}${err ? ` — ${String(err)}` : ''}`),
+            );
+          }
+        });
       });
-    });
+    } catch (error) {
+      // Audit 23-b M2: jangan bocorkan channel + handler presence pada join
+      // yang gagal — tanpa ini setiap retry join menambah satu channel hidup
+      // di client Supabase bersama (kebocoran memori sesi panjang).
+      this.signaling.unbind();
+      try {
+        await this.channel.unsubscribe();
+      } catch {
+        // best-effort — removeChannel tetap di bawah
+      }
+      if (typeof this.supabase.removeChannel === 'function') {
+        try {
+          await this.supabase.removeChannel(this.channel);
+        } catch {
+          // best-effort
+        }
+      }
+      throw error;
+    }
     this.state = 'joined';
     const tracked = await this.channel.track({ ...this.self });
+    // Audit 23-b M3: auto-leave room-full bisa menang di sela await track()
+    // (presence sync server tiba setelah subscribe). Tanpa cek ulang ini,
+    // join() resolve SUKSES untuk controller yang sudah 'left' — pemanggil
+    // mengira join berhasil padahal channel sudah dibuang.
+    if (this.state !== 'joined') {
+      throw new Error('room penuh: keluar otomatis selama join (presence sync)');
+    }
     if (tracked !== 'ok') {
       await this.leave();
       throw new Error(`gagal melacak presence: ${tracked}`);
@@ -264,7 +312,23 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
         this.queuePendingSignal(message);
         return;
       }
-      this.connectPeer(session);
+      // Audit 23-b M6: jalur self-heal ini TIDAK boleh melampaui kapasitas
+      // mesh — addPeer MELEMPAR saat penuh dan exception dari handler
+      // broadcast menyebar ke dispatcher realtime. Aturan deterministiknya
+      // sama dengan handlePresenceSync:MAX_ROOM_SIZE (diri + maks 7 remote).
+      if (this.manager.size >= MAX_ROOM_SIZE - 1) {
+        return; // di luar kapasitas — abaikan; presence sync tetap otoritatif
+      }
+      try {
+        this.connectPeer(session);
+      } catch (error) {
+        // Lapisan pertahanan: kegagalan pembuatan PeerConnection (mis. factory
+        // melempar) tidak boleh menyebar ke dispatcher broadcast.
+        this.emit('error', {
+          message: `peer ${message.from}: gagal self-heal connect`,
+          ...(error !== undefined ? { cause: error } : {}),
+        });
+      }
     }
     this.manager.handleSignal(message);
   }

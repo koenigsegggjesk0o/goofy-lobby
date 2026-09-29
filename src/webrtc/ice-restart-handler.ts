@@ -87,6 +87,7 @@ export class IceRestartHandler {
     if (connection === 'connected') {
       this.clearDisconnectedTimer();
       this.clearEstablishmentTimer(); // sukses → watchdog establishment dilucuti
+      this.clearRestartTimer(); // audit 23-b M5: pulih cepat → restart terjadwal DIBATALKAN
       this.attempts = 0; // pulih → reset hitungan backoff
       return;
     }
@@ -189,14 +190,21 @@ export class IceRestartHandler {
     }
   }
 
+  /** Audit 23-b M5: pulih ke 'connected' harus membatalkan restart yang
+   * sudah terjadwal — tanpa ini makeOffer({iceRestart}) menyobek koneksi
+   * yang justru baru sehat (gap audio terdengar + renegosiasi sia-sia). */
+  private clearRestartTimer(): void {
+    if (this.restartTimer !== null) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
+  }
+
   /** Hentikan pemantauan (peer ditutup normal). */
   close(): void {
     this.finished = true;
     this.clearDisconnectedTimer();
     this.clearEstablishmentTimer();
-    if (this.restartTimer !== null) {
-      clearTimeout(this.restartTimer);
-      this.restartTimer = null;
-    }
+    this.clearRestartTimer();
   }
 }

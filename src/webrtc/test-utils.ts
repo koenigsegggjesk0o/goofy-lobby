@@ -253,6 +253,9 @@ export class FakeRTCPeerConnection extends FakeEventTarget {
 export class FakeRealtimeChannel {
   readonly topic: string;
   readonly presenceKey: string | undefined;
+  /** P0-1: apakah channel dibuat dengan config.private — harusnya selalu true.
+   * Dari options.config.private (bukan top-level — bentuk supabase-js). */
+  readonly isPrivate: boolean | undefined;
   readonly broadcastHandlers = new Map<string, Array<(payload: unknown) => void>>();
   readonly presenceSyncHandlers = new Set<() => void>();
   readonly presence = new Map<string, SessionInfo>();
@@ -261,11 +264,18 @@ export class FakeRealtimeChannel {
   subscribed = false;
   unsubscribed = false;
   untracked = false;
-  subscribeStatus: 'SUBSCRIBED' | 'CHANNEL_ERROR' | 'TIMED_OUT' = 'SUBSCRIBED';
+  /** Status subscribe yang bisa disimulasikan — 'CLOSED' ditambahkan untuk
+   * regresi audit 23-b M1 (channel ditutup pihak server saat join berjalan;
+   * realtime-js memang memancarkan status CLOSED dari _onClose). */
+  subscribeStatus: 'SUBSCRIBED' | 'CHANNEL_ERROR' | 'TIMED_OUT' | 'CLOSED' = 'SUBSCRIBED';
 
-  constructor(topic: string, options?: { config?: { presence?: { key?: string } } }) {
+  constructor(
+    topic: string,
+    options?: { config?: { private?: boolean; presence?: { key?: string } } },
+  ) {
     this.topic = topic;
     this.presenceKey = options?.config?.presence?.key;
+    this.isPrivate = options?.config?.private;
   }
 
   on(
@@ -369,7 +379,10 @@ export class FakeSupabase {
   readonly channels: FakeRealtimeChannel[] = [];
   readonly removedChannels: FakeRealtimeChannel[] = [];
 
-  channel(topic: string, options?: { config?: { presence?: { key?: string } } }): RealtimeChannel {
+  channel(
+    topic: string,
+    options?: { config?: { private?: boolean; presence?: { key?: string } } },
+  ): RealtimeChannel {
     const channel = new FakeRealtimeChannel(topic, options);
     this.channels.push(channel);
     return channel as unknown as RealtimeChannel;

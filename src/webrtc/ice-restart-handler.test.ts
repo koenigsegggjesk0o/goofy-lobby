@@ -72,6 +72,27 @@ describe('IceRestartHandler', () => {
     expect(onRestart).toHaveBeenLastCalledWith(3);
   });
 
+  it('regresi audit 23-b M5: pulih ke connected di jendela backoff → restart terjadwal DIBATALKAN', async () => {
+    const { states, handler, onRestart } = setup({ baseDelayMs: 2_000, maxAttempts: 3 });
+    states.connection = 'failed';
+    handler.observe();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onRestart).toHaveBeenCalledTimes(1); // attempt 1 = langsung
+
+    // Masih gagal → attempt 2 terjadwal dengan delay backoff 2s.
+    handler.observe();
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(onRestart).toHaveBeenCalledTimes(1);
+
+    // PULIH di jendela backoff: koneksi sehat → attempt 2 yang masih
+    // terjadwal HARUS batal. Tanpa fix, makeOffer({iceRestart}) menyobek
+    // koneksi yang justru baru pulih.
+    states.connection = 'connected';
+    handler.observe();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(onRestart).toHaveBeenCalledTimes(1); // TIDAK ada attempt ke-2
+  });
+
   it('menyerah setelah maxAttempts tanpa perbaikan', async () => {
     const { states, handler, onRestart, onGiveUp } = setup({ maxAttempts: 2 });
     states.connection = 'failed';

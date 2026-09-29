@@ -42,8 +42,8 @@ test('mesh tiga konteks: full-mesh 2 peer/sisi, posisi broadcast dua sisi, leave
 }: {
   browser: Browser;
 }) => {
-  const roomCode = `e2e${Math.random().toString(36).slice(2, 8)}`; // [a-z0-9]{4,12}
-
+  // P0-1: room diterbitkan SERVER — alpha host (createRoom), kode dibagikan
+  // ke bravo & charlie lewat hasil joinMesh (bukan dikarang client lagi).
   const contextAlpha = await browser.newContext();
   const contextBravo = await browser.newContext();
   const contextCharlie = await browser.newContext();
@@ -57,11 +57,14 @@ test('mesh tiga konteks: full-mesh 2 peer/sisi, posisi broadcast dua sisi, leave
     await signInOn(pageCharlie, charlie);
 
     // alpha menyematkan stream mock → track audio harus diterima bravo & charlie
-    const joinAlpha = await pageAlpha.evaluate(
-      (code) => window.__harness.joinMesh(code, { attachMockStream: true }),
-      roomCode,
+    const joinAlpha = await pageAlpha.evaluate(() =>
+      window.__harness.joinMesh('', { createRoom: true, attachMockStream: true }),
     );
     expect(joinAlpha.ok).toBe(true);
+    const roomCode = joinAlpha.roomCode;
+    if (typeof roomCode !== 'string') {
+      throw new Error(`createRoom tidak menghasilkan kode: ${JSON.stringify(joinAlpha)}`);
+    }
     const joinBravo = await pageBravo.evaluate((code) => window.__harness.joinMesh(code), roomCode);
     expect(joinBravo.ok).toBe(true);
     const joinCharlie = await pageCharlie.evaluate(

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { isSelectedPairRelay, pickSelectedPair } from './relay-stats';
+import {
+  isSelectedPairRelay,
+  isSelectedPairRelayOverTcpOrTls,
+  pickSelectedPair,
+} from './relay-stats';
 import type { SelectedPairInfo, StatsEntryLike } from './relay-stats';
 
 /** Helper narrow tanpa non-null assertion (konvensi proyek — helper yang throw). */
@@ -16,6 +20,7 @@ const chromeLike = (): StatsEntryLike[] => [
     candidateType: 'relay',
     address: '1.2.3.4',
     port: 40000,
+    protocol: 'udp',
     relayProtocol: 'udp',
   },
   {
@@ -24,8 +29,17 @@ const chromeLike = (): StatsEntryLike[] => [
     candidateType: 'host',
     address: '192.168.1.10',
     port: 50000,
+    protocol: 'udp',
   },
-  { id: 'C3', type: 'remote-candidate', candidateType: 'relay', address: '5.6.7.8', port: 40001 },
+  {
+    id: 'C3',
+    type: 'remote-candidate',
+    candidateType: 'relay',
+    address: '5.6.7.8',
+    port: 40001,
+    protocol: 'udp',
+    relayProtocol: 'udp',
+  },
   { id: 'C4', type: 'remote-candidate', candidateType: 'srflx', address: '9.9.9.9', port: 60000 },
   {
     id: 'P1',
@@ -211,6 +225,137 @@ describe('pickSelectedPair', () => {
     ];
     const pair = mustPair(pickSelectedPair(report));
     expect(isSelectedPairRelay(pair)).toBe(false);
+  });
+});
+
+describe('pickSelectedPair — protokol transport + relayProtocol (P0-2)', () => {
+  /** Fixture relay lewat TCP ke TURN server (URL ?transport=tcp) — Chrome:
+   * protocol kandidat tetap 'udp' (alamat relay ke peer), relayProtocol 'tcp'
+   * (kaki klien→TURN server). Inilah bukti DoD "UDP diblokir tapi sesi hidup". */
+  const relayTcpLike = (): StatsEntryLike[] => [
+    {
+      id: 'C1',
+      type: 'local-candidate',
+      candidateType: 'relay',
+      protocol: 'udp',
+      relayProtocol: 'tcp',
+    },
+    {
+      id: 'C3',
+      type: 'remote-candidate',
+      candidateType: 'relay',
+      protocol: 'udp',
+      relayProtocol: 'tcp',
+    },
+    {
+      id: 'P1',
+      type: 'candidate-pair',
+      localCandidateId: 'C1',
+      remoteCandidateId: 'C3',
+      state: 'succeeded',
+      nominated: true,
+      selected: true,
+    },
+  ];
+
+  it('membaca protocol + relayProtocol kandidat lokal dan remote', () => {
+    const pair = mustPair(pickSelectedPair(chromeLike()));
+    expect(pair.localProtocol).toBe('udp');
+    expect(pair.remoteProtocol).toBe('udp');
+    expect(pair.localRelayProtocol).toBe('udp');
+    expect(pair.remoteRelayProtocol).toBe('udp');
+  });
+
+  it('relay lewat TCP ke TURN → isSelectedPairRelayOverTcpOrTls true (DoD blokir-UDP)', () => {
+    const pair = mustPair(pickSelectedPair(relayTcpLike()));
+    expect(pair.localType).toBe('relay');
+    expect(pair.localRelayProtocol).toBe('tcp');
+    expect(isSelectedPairRelay(pair)).toBe(true);
+    expect(isSelectedPairRelayOverTcpOrTls(pair)).toBe(true);
+  });
+
+  it('relay lewat TLS ke TURN (skema turns:) → true', () => {
+    const report = relayTcpLike();
+    const local = report[0];
+    if (local === undefined) throw new Error('fixture hilang');
+    local.relayProtocol = 'tls';
+    const pair = mustPair(pickSelectedPair(report));
+    expect(isSelectedPairRelayOverTcpOrTls(pair)).toBe(true);
+  });
+
+  it('relay lewat UDP ke TURN → isSelectedPairRelay true TAPI OverTcpOrTls false', () => {
+    const pair = mustPair(pickSelectedPair(chromeLike()));
+    expect(pair.localRelayProtocol).toBe('udp');
+    expect(isSelectedPairRelay(pair)).toBe(true);
+    expect(isSelectedPairRelayOverTcpOrTls(pair)).toBe(false);
+  });
+
+  it('relayProtocol tidak hadir (browser tanpa field) → null + OverTcpOrTls false (jujur, bukan klaim)', () => {
+    const report: StatsEntryLike[] = [
+      { id: 'C1', type: 'local-candidate', candidateType: 'relay', protocol: 'udp' },
+      { id: 'C3', type: 'remote-candidate', candidateType: 'relay' },
+      {
+        id: 'P1',
+        type: 'candidate-pair',
+        localCandidateId: 'C1',
+        remoteCandidateId: 'C3',
+        state: 'succeeded',
+        nominated: true,
+        selected: true,
+      },
+    ];
+    const pair = mustPair(pickSelectedPair(report));
+    expect(pair.localRelayProtocol).toBeNull();
+    expect(pair.remoteRelayProtocol).toBeNull();
+    expect(isSelectedPairRelayOverTcpOrTls(pair)).toBe(false);
+  });
+
+  it('kandidat dangling → protocol/relayProtocol null, tidak melempar', () => {
+    const report: StatsEntryLike[] = [
+      {
+        id: 'P1',
+        type: 'candidate-pair',
+        localCandidateId: 'HILANG',
+        remoteCandidateId: 'JUGA-HILANG',
+        state: 'succeeded',
+        nominated: true,
+        selected: true,
+      },
+    ];
+    const pair = mustPair(pickSelectedPair(report));
+    expect(pair.localProtocol).toBeNull();
+    expect(pair.localRelayProtocol).toBeNull();
+    expect(pair.remoteProtocol).toBeNull();
+    expect(pair.remoteRelayProtocol).toBeNull();
+  });
+
+  it('host pair → OverTcpOrTls false walau protocol tcp (bukan relay)', () => {
+    const report: StatsEntryLike[] = [
+      { id: 'C1', type: 'local-candidate', candidateType: 'host', protocol: 'tcp' },
+      { id: 'C2', type: 'remote-candidate', candidateType: 'host', protocol: 'tcp' },
+      {
+        id: 'P1',
+        type: 'candidate-pair',
+        localCandidateId: 'C1',
+        remoteCandidateId: 'C2',
+        state: 'succeeded',
+        nominated: true,
+        selected: true,
+      },
+    ];
+    const pair = mustPair(pickSelectedPair(report));
+    expect(pair.localProtocol).toBe('tcp');
+    expect(isSelectedPairRelayOverTcpOrTls(pair)).toBe(false);
+  });
+
+  it('bentuk maplike [key, value] juga membaca protocol/relayProtocol (regresi 14-b)', () => {
+    const report = relayTcpLike().map((entry) => [
+      entry.id ?? 'x',
+      entry,
+    ]) as unknown as StatsEntryLike[];
+    const pair = mustPair(pickSelectedPair(report));
+    expect(pair.localRelayProtocol).toBe('tcp');
+    expect(isSelectedPairRelayOverTcpOrTls(pair)).toBe(true);
   });
 });
 

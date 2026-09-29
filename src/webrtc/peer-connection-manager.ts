@@ -463,6 +463,14 @@ export class PeerConnectionManager {
     if (pair === null) {
       return; // belum ada pasangan / getStats gagal — diam, jujur tanpa derau
     }
+    // Audit 23-b M4: cek liveness SETELAH await — getStats bisa resolve
+    // SETELAH removePeer; tanpa ini callback men-SET ULANG entri pasangan
+    // untuk sesi yang sudah pergi (map basi + event selected-pair spurion).
+    // Menutup jalur sampel-segera (void readAndEmitSelectedPair) yang tidak
+    // punya guard; jalur timer sudah berguard sendiri di atas.
+    if (this.peers.get(peer.session.sessionId) !== peer) {
+      return;
+    }
     const signature = `${pair.localType}/${pair.remoteType}/${pair.state ?? '-'}/${
       pair.nominated ?? '-'
     }/${pair.selected ?? '-'}`;

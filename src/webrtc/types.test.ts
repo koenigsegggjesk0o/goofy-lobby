@@ -6,22 +6,48 @@ import {
   SessionInfoSchema,
   SignalMessageSchema,
   clampPosition,
+  normalizeRoomCode,
   WORLD_BOUND,
 } from './types';
 
 describe('RoomCodeSchema', () => {
-  it('menerima kode [a-z0-9]{4,12}', () => {
-    expect(RoomCodeSchema.safeParse('lobby01').success).toBe(true);
-    expect(RoomCodeSchema.safeParse('abcd').success).toBe(true);
-    expect(RoomCodeSchema.safeParse('a'.repeat(12)).success).toBe(true);
+  it('menerima kode Crockford-32 8 karakter (tanpa I/L/O/U)', () => {
+    expect(RoomCodeSchema.safeParse('7Q2M9XK4').success).toBe(true);
+    expect(RoomCodeSchema.safeParse('0123ABCD').success).toBe(true);
+    expect(RoomCodeSchema.safeParse('ZW9YH7T2').success).toBe(true);
   });
 
   it('menolak kode di luar pola', () => {
-    expect(RoomCodeSchema.safeParse('abc').success).toBe(false); // terlalu pendek
-    expect(RoomCodeSchema.safeParse('a'.repeat(13)).success).toBe(false); // terlalu panjang
-    expect(RoomCodeSchema.safeParse('LOBBY').success).toBe(false); // huruf besar
-    expect(RoomCodeSchema.safeParse('lob by').success).toBe(false); // spasi
-    expect(RoomCodeSchema.safeParse('lobby!').success).toBe(false); // simbol
+    expect(RoomCodeSchema.safeParse('7Q2M9XK').success).toBe(false); // 7 char
+    expect(RoomCodeSchema.safeParse('7Q2M9XK45').success).toBe(false); // 9 char
+    expect(RoomCodeSchema.safeParse('7q2m9xk4').success).toBe(false); // huruf kecil
+    expect(RoomCodeSchema.safeParse('7Q2M9XKI').success).toBe(false); // I
+    expect(RoomCodeSchema.safeParse('7Q2M9XKL').success).toBe(false); // L
+    expect(RoomCodeSchema.safeParse('7Q2M9XKO').success).toBe(false); // O
+    expect(RoomCodeSchema.safeParse('7Q2M9XKU').success).toBe(false); // U
+    expect(RoomCodeSchema.safeParse('7Q2-9XK4').success).toBe(false); // pemisah
+    expect(RoomCodeSchema.safeParse('').success).toBe(false);
+  });
+});
+
+describe('normalizeRoomCode', () => {
+  it('uppercase + buang non-alfanumerik + O/I/L → 0/1/1 (paritas SQL 0016)', () => {
+    expect(normalizeRoomCode('7q2m 9xk4')).toBe('7Q2M9XK4');
+    expect(normalizeRoomCode(' 7q2m-9xk4 ')).toBe('7Q2M9XK4');
+    expect(normalizeRoomCode('7Q2O9XKI')).toBe('7Q209XK1'); // O→0, I→1
+    expect(normalizeRoomCode('7q2l9xki')).toBe('7Q219XK1'); // l→1, i→1
+    expect(normalizeRoomCode('7Q2M9XK4')).toBe('7Q2M9XK4'); // idempoten
+  });
+
+  it('menghasilkan kode valid dari input user yang ramah salah ketik', () => {
+    expect(RoomCodeSchema.safeParse(normalizeRoomCode('7q2o-9xki')).success).toBe(true);
+    expect(normalizeRoomCode('7q2o-9xki')).toBe('7Q209XK1');
+  });
+
+  it('input sampah tetap sampah (bukan validasi, hanya normalisasi)', () => {
+    expect(normalizeRoomCode('')).toBe('');
+    expect(normalizeRoomCode('!!!')).toBe('');
+    expect(RoomCodeSchema.safeParse(normalizeRoomCode('pendek')).success).toBe(false);
   });
 });
 

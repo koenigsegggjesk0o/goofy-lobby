@@ -21,22 +21,37 @@
  * peer): koneksi HANYA mungkin bila TURN sungguhan merelay. Terhubung =
  * TURN terbukti end-to-end. Nilai kredensial TIDAK PERNAH dicetak.
  *
+ * MODE SIMULASI FIREWALL BLOKIR-UDP (P0-2 DoD):
+ *   bun scripts/dev/probe-webrtc.mjs --turn --turn-tcp
+ * Menambah syarat: SEMUA URL TURN wajib non-UDP ke arah server (skema
+ * turns: ATAU query transport=tcp) DAN pasangan kandidat terpilih tiap
+ * run terbukti relay dengan relayProtocol tcp/tls (kaki klien→TURN).
+ * Itulah jalur yang tetap hidup saat firewall memblokir UDP — kernel-level
+ * blokir tidak mungkin di sandbox (tanpa root/iptables), jadi pembatasan
+ * dipaksakan di lapisan ICE: URL transport=tcp membuat kandidat relay
+ * SATU-SATU kandidat yang bisa terbentuk, persis kondisi jaringan
+ * UDP-blocked. Bukti getStats ini ekuivalen dengan yang ditampilkan
+ * chrome://webrtc-internals (sumber data yang sama — RTCStatsReport).
+ *
  * Jalankan:
  *   bun scripts/dev/probe-webrtc.mjs            # 1x
  *   bun scripts/dev/probe-webrtc.mjs --runs 10  # distribusi waktu 10x
  *   bun scripts/dev/probe-webrtc.mjs --no-stun  # tanpa STUN (host-only)
  *   bun scripts/dev/probe-webrtc.mjs --turn     # verifikasi relay TURN
+ *   bun scripts/dev/probe-webrtc.mjs --turn --turn-tcp  # DoD P0-2 (blokir-UDP)
  *
  * Exit code: 0 = sukses sesuai mode (mode --turn: SEMUA run tersambung
- * lewat relay; mode normal: minimal satu run tersambung). 1 = env TURN
- * kosong/invalid saat --turn, atau sambungan gagal sesuai ketentuan mode.
+ * lewat relay; --turn-tcp: tambahan semua kaki relay tcp/tls; mode normal:
+ * minimal satu run tersambung). 1 = env TURN kosong/invalid saat --turn
+ * atau sambungan gagal sesuai ketentuan mode. 2 = konfigurasi --turn-tcp
+ * memuat URL UDP (harus turns:/transport=tcp).
  */
 import { chromium } from '@playwright/test';
 import { pathToFileURL } from 'node:url';
 // SATU sumber kebenaran validasi TURN — modul yang sama dipakai mesh asli
 // (8-d); bun men-transpile TS saat import, tanpa duplikasi logika.
 import { parseTurnEnv, resolveIceServers } from '../../src/webrtc/turn-config.ts';
-import { pickSelectedPair } from '../../src/webrtc/relay-stats.ts';
+import { isSelectedPairRelayOverTcpOrTls, pickSelectedPair } from '../../src/webrtc/relay-stats.ts';
 import { summarizeNumbers } from '../../src/lib/stats.ts';
 
 const STUN = process.argv.includes('--no-stun') ? [] : [{ urls: 'stun:stun.l.google.com:19302' }];
@@ -113,6 +128,8 @@ function describePair(pair) {
     `state=${pair.state ?? '?'}`,
     `nominated=${pair.nominated ?? '?'}`,
     pair.selected !== null ? `selected=${pair.selected}` : null,
+    pair.localProtocol !== null ? `proto=${pair.localProtocol}` : null,
+    pair.localRelayProtocol !== null ? `relayProto=${pair.localRelayProtocol}` : null,
   ]
     .filter((f) => f !== null)
     .join(' ');
@@ -258,10 +275,18 @@ if (isMain) {
 
 async function main() {
   const TURN_MODE = process.argv.includes('--turn');
+  const TURN_TCP = process.argv.includes('--turn-tcp');
   let iceServers = STUN;
   let iceTransportPolicy = 'all';
 
-  if (TURN_MODE) {
+  if (TURN_MODE || TURN_TCP) {
+    if (TURN_TCP && !TURN_MODE) {
+      // --turn-tcp tanpa --turn hampir pasti salah ketik — jangan tebak
+      // niat pemanggil; jelaskan dan keluar dengan kode konfigurasi.
+      console.log('❌ --turn-tcp hanya bermakna bersama --turn.');
+      console.log('   Gunakan: bun scripts/dev/probe-webrtc.mjs --turn --turn-tcp');
+      process.exit(2);
+    }
     // Sumber env: process.env (bun memuat .env otomatis). Hanya tiga var
     // TURN yang dibaca; nilai TIDAK PERNAH dicetak — hanya status/alasan.
     const source = {
@@ -281,6 +306,34 @@ async function main() {
       console.log('TURN: invalid — konfigurasi tidak sah, verifikasi dibatalkan:');
       for (const reason of turn.reasons) console.log(`  - ${reason}`);
       process.exit(1);
+    }
+    if (TURN_TCP) {
+      // Simulasi firewall blokir-UDP (P0-2 DoD): SEMUA URL TURN wajib
+      // non-UDP ke arah server — skema turns: (TLS) atau query
+      // transport=tcp. URL turn: tanpa query = UDP default → tolak keras,
+      // jangan biarkan verifikasi "lolos" lewat kaki UDP.
+      const urls = (process.env.VITE_TURN_URL ?? '')
+        .split(',')
+        .map((part) => part.trim())
+        .filter((part) => part !== '');
+      const udpUrls = urls.filter(
+        (url) => !url.startsWith('turns:') && !/[?&]transport=tcp([&#]|$)/.test(url),
+      );
+      if (udpUrls.length > 0) {
+        console.log(
+          '❌ --turn-tcp: ada URL TURN yang kakinya UDP ke server — simulasi blokir-UDP jadi tidak sah:',
+        );
+        for (const url of udpUrls) {
+          console.log(
+            `  - ${url} → gunakan turns:${url.slice('turn:'.length)} atau tambahkan ?transport=tcp`,
+          );
+        }
+        process.exit(2);
+      }
+      console.log(
+        'TURN-TCP: semua URL non-UDP ke server (turns:/transport=tcp) — kandidat relay HANYA bisa terbentuk lewat TCP/TLS,\n' +
+          'ekuivalen lapisan-ICE dari jaringan yang memblokir UDP (bukti: relayProtocol pasangan terpilih).',
+      );
     }
     iceServers = resolveIceServers(source).iceServers;
     iceTransportPolicy = 'relay';
@@ -344,9 +397,28 @@ async function main() {
 
   if (TURN_MODE) {
     const relayPairs = results.filter((r) => r.pairA?.localType === 'relay');
+    const tcpTlsPairs = results.filter(
+      (r) => r.pairA !== null && isSelectedPairRelayOverTcpOrTls(r.pairA),
+    );
+    if (TURN_TCP) {
+      if (connectedRuns.length === results.length && tcpTlsPairs.length === results.length) {
+        console.log(
+          `\nTURN RELAY TCP/TLS TERVERIFIKASI ✅ — ${connectedRuns.length}/${results.length} run tersambung dgn pasangan relay yang kakinya ke TURN tcp/tls ` +
+            `(contoh: relayProto=${tcpTlsPairs[0].pairA.localRelayProtocol}). ` +
+            'DoD P0-2 terpenuhi: sesi tetap hidup via relay saat UDP diblokir.',
+        );
+        process.exit(0);
+      }
+      console.log(
+        `\nTURN TCP/TLS TIDAK terverifikasi ❌ — ${connectedRuns.length}/${results.length} run tersambung; ` +
+          `pasangan relay tcp/tls: ${tcpTlsPairs.length}/${results.length} (sisanya relayProtocol udp/tidak terbaca).`,
+      );
+      process.exit(1);
+    }
     if (connectedRuns.length === results.length && relayPairs.length === results.length) {
       console.log(
-        `\nTURN RELAY TERVERIFIKASI ✅ — ${connectedRuns.length}/${results.length} run tersambung dgn pasangan terpilih relay (A=${relayPairs[0].pairA.localType}).`,
+        `\nTURN RELAY TERVERIFIKASI ✅ — ${connectedRuns.length}/${results.length} run tersambung dgn pasangan terpilih relay (A=${relayPairs[0].pairA.localType}, ` +
+          `relayProto=${relayPairs[0].pairA.localRelayProtocol ?? 'tidak terbaca'}).`,
       );
       process.exit(0);
     }

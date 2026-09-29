@@ -65,7 +65,7 @@ Dieksekusi 2026-09-27 ~23:05 WIB, direktori kerja bersih sebelum modul TURN (git
 
 - `security_captcha_enabled=true`, provider turnstile (PATCH config/auth 200).
 - Bukti live penolakan: signup TANPA token → 400 `captcha_failed "no captcha_token found"`. Field yang benar ditemukan empiris: `gotrue_meta_security.captcha_token`.
-- Keputusan ter-flag: secret terpasang = test key always-pass resmi Cloudflare agar Playwright (dideteksi bot) bisa lewat; swap ke secret produksi = satu PATCH saat Fase 3. Signup tanpa token TETAP ditolak (tidak melemah karena test key).
+- ~~Keputusan ter-flag: secret terpasang = test key always-pass resmi Cloudflare~~ **KOREKSI 29 Sep 2026 (bukti 22-e run 2):** asumsi ini TERBUKTI SALAH — GET config/auth menunjukkan `security_captcha_enabled=true` dengan secret Turnstile NYATA (signin programatik dengan dummy token ditolak `captcha_failed`). Verifikasi cloud P0-1 kini menonaktifkan captcha SEMENTARA via PATCH + memulihkannya otomatis di akhir run. Signup tanpa token TETAP ditolak.
 - Catatan rate limit email konfirmasi 2/jam (free tier) → e2e menguji jalur penolakan (persis bunyi DoD), happy-path signin pakai QA users.
 
 ### #5–#7, #9, #10 Modul sistem — ✅

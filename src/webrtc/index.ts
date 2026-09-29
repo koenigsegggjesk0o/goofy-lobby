@@ -4,7 +4,12 @@
  */
 export { DataChannelSync, type DataChannelSyncOptions } from './data-channel-sync';
 export { IceRestartHandler, type IceRestartHandlerOptions } from './ice-restart-handler';
-export { isSelectedPairRelay, pickSelectedPair, type SelectedPairInfo } from './relay-stats';
+export {
+  isSelectedPairRelay,
+  isSelectedPairRelayOverTcpOrTls,
+  pickSelectedPair,
+  type SelectedPairInfo,
+} from './relay-stats';
 export {
   PeerConnectionManager,
   DEFAULT_ICE_SERVERS,
@@ -13,6 +18,14 @@ export {
 } from './peer-connection-manager';
 export { SignalingClient, type SignalingClientOptions } from './signaling-client';
 export { MeshRoomController, type MeshRoomControllerOptions } from './mesh-room-controller';
+export {
+  RoomGate,
+  RoomGateError,
+  ROOM_GATE_ERROR_MESSAGES,
+  type RoomGateErrorCode,
+  type RoomGateOptions,
+  type RoomGateSupabaseLike,
+} from './room-gate';
 export {
   TURN_USERNAME_MAX_LENGTH,
   parseTurnEnv,
@@ -37,6 +50,7 @@ export {
   SignalMessageSchema,
   WORLD_BOUND,
   clampPosition,
+  normalizeRoomCode,
   type IceSignalMessage,
   type MeshRoomEventMap,
   type PeerState,
