@@ -1374,3 +1374,20 @@ Work Log:
 
 Stage Summary:
 - SELURUH remediasi yang bisa dilakukan TANPA kredensial/cloud selesai: H1 broadcast-flood parsial (rate limit trigger DB utk jalur data + config checklist realtime; broadcast signaling murni tak bisa dibatasi RLS — cloud config), H2 TURN ephemeral SIAP DEPLOY, H3 backup SIAP JALAN, MEDIUM semua tertutup (PKCE, Paddle harga+refund+idempotensi, storage quota, block-in-mesh dua arah, erasure, Sentry scrub, CI pin), LOW semua tertutup (schema caps, DC inbound, roster check, IP purge, grants hygiene, email-enum harness, stale docs). Sisa = butuh user: (1) SUPABASE_ACCESS_TOKEN utk apply 0018+0019-0021 (HIGH-1 rantai friendship masih hidup di cloud sampai 0018 apply!), (2) Cloudflare TURN (TURN_SECRET), (3) PADDLE_ALLOWED_PRICE_IDS, (4) secrets workflow backup (DATABASE_URL+AGE_RECIPIENT), (5) GitHub private + scope workflow PAT. Cron webDevReview dibuat ulang pasca-task.
+
+---
+Task ID: 32
+Agent: main (Z.ai Code)
+Task: Terima UI dari Google Drive user (folder "discord ui", 3.383 file) dan ekstrak CLEAN UI sesuai instruksi: hanya UI-nya — tanpa chat pribadi (yuan xi jiejie, emoji kucing, zarn), tanpa komunitas/chat, tanpa friend list, tanpa hal terkait discord/nitro.
+
+Work Log:
+- Fetch folder Drive via agent-browser (render JS) → mapping 6 subfolder domain + manifest lengkap 3.383 file via gdown download_folder(skip_download=True) → manifest_raw.txt.
+- Klasifikasi manifest: KEEP = 682 CSS assets (design system), 15 woff2 (gg sans/Ginto), 83 SVG + 39 ikon, shell HTML, 42 aset platform cdn, 10 _DataURI, 4 manifest stiker, 5 config generik. EXCLUDE hard-coded di downloader = discord.com/api/** (friend list/profile/chat/billing), avatars/38, icons/174 (ikon server user), attachments, clan-badges, badge-icons (nitro), emojis (emoji kucing), media+discovery-splashes+quests (shop/nitro), images-ext-1 (GIF chat), status/wss/cdn-cgi/__development, dan SEMUA JS/wasm/mp3 (bukan desain visual).
+- Downloader paralel (4 worker, endpoint drive.usercontent.google.com + confirm=t, UA browser, retry eksponensial, resume skip-existing) → 888 file OK / 0 gagal / 5 menit. ui-reference/ masuk .gitignore (aset tak masuk repo).
+- Parsing design system dari CSS asli (952007.css 776KB = visual-refresh tokens; 419070.css = konstanta layout): :root 3.700 token, 1.706 primitif -hsl resolusi ke hex; lapisan .theme-dark + .visual-refresh via brace-balanced collector → design-tokens.json (bg base lowest/lower/low #2c2d32/#323339/#36373e; surface high #393a41+; text/icon/border/interactive/status lengkap; layout: topbar 32px, rail 68px/44px item, sidebar 268px radius-md 12, header 49px, composer 56px, user area 44px, avatar pesan 40px; radius 4/8/12/16/24; font gg sans 400-800 — file asli disalin ke clean-ui/fonts).
+- Bangun REPLIKA CLEAN UI: clean-ui/index.html + ui.css — tampilan DM visual-refresh dark, konten 100% placeholder (Alya/Bagas/Citra/Dimas/Eka + "kamu", pesan fiktif soal voice room, kartu join call, typing indicator); ikon inline SVG digambar ulang; TANPA nitro/shop di nav (hanya Teman + Jelajahi), tanpa data user apa pun.
+- Verifikasi: agent-browser 1440×900 + 1600×1000 → screenshot; 0 console error; font gg sans 400/500/600/700/800 termuat terverifikasi via document.fonts; viewport 375px → hanya scroll horizontal (UI desktop, by-design); evaluasi VLM: fidelity 9/10 ("exceptionally high-fidelity rebuild", palet/typografi/layout/components konsisten refresh 2024/25).
+- Dokumentasi: ui-reference/README.md (struktur, tabel exclusion lengkap + alasan, ringkasan design system, cara lihat, kaitan Fase 3).
+
+Stage Summary:
+- Clean UI Discord terekstrak penuh TANPA satu byte pun data pribadi user: mirror 888 file UI-only (21MB) + replika clean-ui interaktif (624KB, font asli) + design-tokens.json siap pakai. Aturan Fase 3 (UI lock produk) tetap berlaku — ini referensi, bukan implementasi produk. Semua aset di ui-reference/ di-gitignore. Sisa cloud-hardening (migrasi 0018-0021 + Edge Function turn-credentials) masih menunggu eksekusi.

@@ -33,3 +33,6 @@ tool-results/
 # CATATAN: worklog.md SENGAJA di-commit sejak insiden reset #4 (lihat header
 # worklog) — file tracked terbukti selamat melewati reset sandbox; dua
 # insiden kehilangan sudah cukup.
+
+# UI reference dari Google Drive (aset Discord mirror) — bukan bagian repo
+ui-reference/
