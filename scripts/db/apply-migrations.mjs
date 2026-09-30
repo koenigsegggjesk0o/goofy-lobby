@@ -33,8 +33,11 @@ function parseEnv() {
 }
 
 const env = parseEnv();
-const TOKEN = env['SUPABASE_ACCESS_TOKEN'];
-const REF = env['SUPABASE_PROJECT_REF'];
+// Proses env diutamakan di atas .env (12-factor): token bisa diberikan inline
+// lewat `SUPABASE_ACCESS_TOKEN=... bun scripts/db/apply-migrations.mjs`
+// tanpa pernah menulis kredensial ke disk.
+const TOKEN = process.env['SUPABASE_ACCESS_TOKEN'] ?? env['SUPABASE_ACCESS_TOKEN'];
+const REF = process.env['SUPABASE_PROJECT_REF'] ?? env['SUPABASE_PROJECT_REF'];
 
 if (!TOKEN || !REF) {
   console.error(

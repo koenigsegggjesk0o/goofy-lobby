@@ -3,99 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>goofy-lobby — Fase 1 selesai + lapisan logika Fase 2 (tanpa UI)</title>
+    <meta name="color-scheme" content="dark" />
+    <meta
+      name="description"
+      content="goofy — obrolan suara spasial: telepon teman, gerakkan posisi, dengar arah suaranya."
+    />
+    <title>goofy — obrolan suara spasial</title>
   </head>
   <body>
-    <!--
-      Halaman status infrastruktur — BUKAN UI produk.
-      Spek (BATASAN RUANG LINGKUP): tidak ada UI sampai Fase 3.
-      Halaman ini hanya supaya dev server & build punya entry + preview panel
-      tidak menampilkan 404. Tanpa styling apa pun, sengaja.
-      Test harness (F1.6) tersedia di /test-harness/ — alat uji Playwright,
-      juga bukan UI produk.
-    -->
-    <p>
-      goofy-lobby — Fase 1 SELESAI (WebRTC, spatial audio, Supabase) + TURN Fase 2 + LAPISAN LOGIKA
-      FITUR FASE 2 (friends, chat, soundboard, voicefilter, payment), tanpa UI (menunggu Fase 3).
-      Audit DoD F1: docs/dod-audit-fase1.md; status &amp; pemetaan Fase 2:
-      docs/fase-2-fitur-logika.md. Test harness (alat uji otomatis) tersedia di /test-harness/.
-    </p>
-    <!-- Status modul sistem (F1.3 + F1.4 + F1.5) — murni teks info, bukan UI produk. -->
-    <p>Modul sistem yang sudah ada (F1.3, tanpa UI):</p>
-    <ul>
-      <li>webrtc/types — kontrak protokol (Zod) + kapasitas room 8</li>
-      <li>webrtc/signaling-client — signaling via Supabase Realtime broadcast</li>
-      <li>webrtc/peer-connection-manager — mesh P2P, perfect negotiation, STUN</li>
-      <li>webrtc/data-channel-sync — posisi ~15x/detik, tervalidasi</li>
-      <li>webrtc/ice-restart-handler — pemulihan koneksi + backoff</li>
-      <li>webrtc/mesh-room-controller — orkestrator room (presence, lifecycle)</li>
-      <li>
-        webrtc/turn-config — konfigurasi TURN fallback (Fase 2): env VITE_TURN_* → iceServers,
-        dipakai joinMesh harness; verifikasi relay: bun run probe:webrtc --turn
-      </li>
-      <li>
-        webrtc/relay-stats — parser pasangan kandidat terpilih dari getStats(); dipakai probe --turn
-        dan mesh nyata (event selected-pair + PeerState.selectedPair, Task 11-b)
-      </li>
-    </ul>
-    <p>Modul audio spasial (F1.4, tanpa UI):</p>
-    <ul>
-      <li>audio/types — konvensi ruang 2D→3D + helper legacy Web Audio</li>
-      <li>audio/spatial-audio-engine — PannerNode HRTF per peer + master gain</li>
-      <li>audio/audio-listener-sync — posisi + orientasi telinga lokal (yaw)</li>
-      <li>audio/bitrate-adaptation — tier Opus high/medium/low dari state koneksi</li>
-    </ul>
-    <p>Modul profil &amp; snippet suara (F1.5, tanpa UI):</p>
-    <ul>
-      <li>profile/types — skema Zod (display name, warna, path snippet) + like-type Supabase</li>
-      <li>profile/voice-recorder — MediaRecorder, auto-stop 15s/25MiB, cleanup track</li>
-      <li>profile/voice-snippet-service — upload bucket voice-snippets (folder-per-user)</li>
-      <li>profile/profile-service — CRUD profiles tervalidasi Zod dua arah</li>
-      <li>profile/voice-snippet-manager — orkestrasi ganti/hapus snippet aman</li>
-    </ul>
-    <p>Modul monitoring (F1.8, tanpa UI):</p>
-    <ul>
-      <li>
-        monitoring/sentry — init error monitoring (no-op bila DSN kosong), scrub kredensial,
-        never-throw
-      </li>
-      <li>
-        monitoring/mesh-trail — pemetaan event mesh → breadcrumb (konteks error terbatas ukurannya)
-      </li>
-      <li>
-        monitoring/trail-log — ring lokal breadcrumb (teramati tanpa DSN, dibaca harness trailLog())
-      </li>
-    </ul>
-    <p>Modul lapisan logika Fase 2 (Task 12, tanpa UI):</p>
-    <ul>
-      <li>friends/ — friendship-service + block-service (kanonik, guard blokir DB, 82 test)</li>
-      <li>chat/ — rate-limiter (sliding window) + message-service (DM gate pertemanan, 52 test)</li>
-      <li>soundboard/ — preset-sounds (katalog) + custom-sound-service (bucket 5 MiB, 38 test)</li>
-      <li>
-        voicefilter/ — pitch shift granular dual-tap (AudioWorklet; frekuensi terbukti
-        zero-crossing; harness initPitchShift bisa diuji live tanpa kredensial)
-      </li>
-      <li>
-        payment/ — paddle-signature (verifikasi PERSIS docs resmi: HMAC-SHA256 timing-safe) + router
-        webhook + premium-status-service; skeleton Deno supabase/functions/paddle-webhook
-      </li>
-      <li>
-        db/migrations.test.ts — 21 migrasi (0001–0021) dieksekusi di PostgreSQL asli (PGlite) +
-        idempotensi + matriks RLS + lockdown kolom is_premium
-      </li>
-    </ul>
-    <p>
-      Test harness + e2e Playwright (F1.6): /test-harness/ mengekspos window.__harness (auth +
-      captcha dummy, profil CRUD + probe RLS, snippet rekam→upload→signed URL, monitoring live, mesh
-      dua &amp; tiga konteks, audio smoke, status TURN + jejak breadcrumb no-auth) — 17 spec e2e.
-    </p>
-    <p>
-      CI GitHub Actions (F1.7, dibuat ulang Task 17): ci.yml (lint+typecheck+test+build) +
-      supabase-keepalive.yml (tiap 3 hari) + backup.yml (26-e, cron 02:30 WIB). Salinan kanonik
-      terlacak di ci/workflows/ + ci/github/ → dipulihkan ke .github/ via scripts/dev/restore-ci.mjs
-      (17 test); aktivasi di GitHub menunggu scope Workflows pada PAT — keempat langkah CI terbukti
-      hijau di simulasi bersih tanpa kredensial (845/845, re-simulasi segar pasca-remedi audit Task
-      20).
-    </p>
+    <div id="root"></div>
+    <noscript>goofy butuh JavaScript untuk jalan.</noscript>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

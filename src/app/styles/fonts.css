@@ -1,0 +1,11 @@
+/* Font asli Discord (hasil ekstraksi UI-reference, aset UI yang diizinkan).
+   Path absolut /fonts/ — file di public/fonts/. */
+@font-face{font-display:swap;font-family:"ABC Ginto Nord";font-style:normal;font-weight:800;src:url(/fonts/ABC-Ginto-Nord-800-normal-097b737553f77c92.woff2) format("woff2")}
+@font-face{font-display:swap;font-family:"ABC Ginto Nord";font-style:italic;font-weight:800;src:url(/fonts/ABC-Ginto-Nord-800-italic-d7f3d9317a5ff964.woff2) format("woff2")}
+@font-face{font-display:swap;font-family:"gg sans";font-style:normal;font-weight:400;src:url(/fonts/gg-sans-400-normal-66d715454104d24e.woff2) format("woff2")}
+@font-face{font-display:swap;font-family:"gg sans";font-style:italic;font-weight:400;src:url(/fonts/gg-sans-400-italic-dd24010f3cf7def7.woff2) format("woff2")}
+@font-face{font-display:swap;font-family:"gg sans";font-style:normal;font-weight:500;src:url(/fonts/gg-sans-500-normal-b272b33815319bae.woff2) format("woff2")}
+@font-face{font-display:swap;font-family:"gg sans";font-style:normal;font-weight:600;src:url(/fonts/gg-sans-600-normal-2df2c3ff74408972.woff2) format("woff2")}
+@font-face{font-display:swap;font-family:"gg sans";font-style:normal;font-weight:700;src:url(/fonts/gg-sans-700-normal-189422196a4f8b53.woff2) format("woff2")}
+@font-face{font-display:swap;font-family:"gg sans";font-style:normal;font-weight:800;src:url(/fonts/gg-sans-800-normal-b2fdbe507d6ce9ef.woff2) format("woff2")}
+@font-face{font-display:swap;font-family:"gg sans mono";font-style:normal;font-weight:400;src:url(/fonts/gg-mono-400-normal-249d0a057895c668.woff2) format("woff2")}

@@ -32,6 +32,9 @@ export default defineConfig({
     entries: ['index.html', 'test-harness/**/*.html'],
   },
   server: {
+    // Preview gateway sandbox menyajikan lewat domain *.fcapp.run — Vite
+    // memblokir host tak dikenal sejak 5.4; izinkan eksplisit.
+    allowedHosts: ['.fcapp.run'],
     // Header keamanan DEV (remediasi 25-a): dev server meniru header yang
     // nanti dipasang host-level di produksi. CSP SENGAJA tidak dipasang di
     // dev — mematikan HMR (eval/source map Vite butuh relaksasi).

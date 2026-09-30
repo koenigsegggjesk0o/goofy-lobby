@@ -292,3 +292,43 @@ dinyatakan live:
 - `ci/workflows/backup.yml`, `ci/github/*`, `scripts/dev/restore-ci.mjs` —
   artefak sisi-repo dari checklist ini (Task 26-e).
 - `worklog.md` Task 25/25-a..25-d — bukti temuan audit per item.
+
+---
+
+## j. Deploy Vercel — UI produk Fase 3 (Task 32, 30 Sep 2026)
+
+Build produk murni: `bun install && bun run build` → `dist/` (SPA statis,
+TANPA test-harness — gating BUILD_HARNESS tetap aktif). Vercel mendeteksi
+Vite otomatis.
+
+**Langkah:**
+
+1. Import repo GitHub ke Vercel (framework preset: **Vite**).
+2. Environment Variables (semua publik by-design):
+   - `VITE_SUPABASE_URL` = `https://llaeglakcheqxlbwvheo.supabase.co`
+   - `VITE_SUPABASE_ANON_KEY` = anon key (dashboard → Settings → API)
+   - `VITE_TURN_EPHEMERAL_URL` =
+     `https://llaeglakcheqxlbwvheo.supabase.co/functions/v1/turn-credentials`
+   - (opsional) `VITE_SENTRY_DSN`
+3. Deploy. SPA satu halaman — tidak perlu rewrite rule.
+4. Supabase dashboard → Authentication → URL Configuration: tambahkan
+   domain Vercel ke **Site URL** + **Redirect URLs**.
+
+**Catatan keamanan:**
+
+- Captcha Turnstile sengaja **dimatikan sementara** (30 Sep 2026) karena
+  site key tidak tersedia di repo/env — tanpa itu login pasti gagal
+  `captcha_failed`. Secret masih tersimpan di dashboard. Cara menyalakan
+  lagi: Authentication → Sign In / Up → Security → Captcha → ON, isi
+  site key + secret lama, lalu tambahkan **site key** ke env
+  `VITE_TURNSTILE_SITE_KEY` di Vercel dan hostnamenya (domain Vercel +
+  preview) ke widget Turnstile di Cloudflare.
+- Realtime `private_only=true` tetap ON; channel aplikasi
+  (`goofy:presence`, `goofy:pokes`) diizinkan policy 0022 khusus role
+  authenticated — room:{kode} tetap eksklusif tiket (P0-1 utuh).
+- Edge Function `turn-credentials` sudah live (mode REST Cloudflare,
+  secrets TURN_KEY_ID/TURN_API_TOKEN terpasang, TTL 3600s).
+
+**Akun demo publik** (tombol cepat di layar masuk, untuk mencoba telepon
+dua tab): qa.alpha/bravo/charlie@goofy.example.com — password di .env
+lokal (TEST_USER_*). Hapus via dashboard bila tidak mau ada di produksi.
