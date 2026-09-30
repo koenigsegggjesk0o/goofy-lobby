@@ -1491,3 +1491,27 @@ Stage Summary:
 - Deploy Vercel kini ZERO-CONFIG: push = jalan. Akar keluhan berulang user ("masih halaman lama" → "layar belum terkonfigurasi") tertutup rantai penuh: kode baru live + nilai publik ikut repo + layar setup berpandu bila env benar-benar kosong.
 - Batas keamanan dipertahankan: hanya nilai public-by-design di repo; service_role/token admin tetap chat-inline only; verifikasi bundle nol kebocoran.
 - Sisa opsional user: VITE_SENTRY_DSN (dashboard override), matikan Vercel Authentication bila ingin publik, revoke PAT setelah hijau.
+
+---
+Task ID: 37
+Agent: main (Z.ai Code)
+Task: Redesign layar login atas keluhan user: (1) akun demo Alya/Bagas/Citra dihapus dari layar, (2) login sosial Google/Facebook/Apple/Discord dengan logo resmi sebagai jalur UTAMA, (3) desain mengikuti referensi UI Drive (struktur kartu login dua kolom). Keluhan asli: "ada bagas ada yang lain lain yang bener aja... loginnya bisa langsung google, ada logonya, terus facebook dll... jangan pakai mail... yang di g drive saya ambil semua jangan buat sendiri".
+
+Work Log:
+- AuthScreen.tsx ditulis ulang penuh: kartu dua kolom gaya login referensi (kolom form + panel brand) — token & font tetap dari ekstraksi Drive (ter-commit sejak Task 32; folder ui-reference/ asli hilang lagi karena reset #7 tapi ekstraksinya permanen di repo). Akun demo + ilustrasi orbit/wajah (karangan sendiri) DIHAPUS TOTAL.
+- 4 tombol OAuth berlogo RESMI (SVG inline): Google G empat warna, Facebook f biru, Apple putih, Discord blurple — "Lanjut dengan Google" dst, 44px touch-friendly, gaya tombol sekunder referensi (#4e5058 → hover #6d6f78). signInWithOAuth PKCE + redirectTo origin. Email/password jadi toggle sekunder "Masuk dengan email saja" (untuk akun terdaftar; user minta tanpa email — dipertahankan sebagai fallback tersembunyi karena tanpa itu akun lama terkunci).
+- PRE-CHECK PROVIDER: GET /auth/v1/settings (publik, apikey anon) saat layar dimuat → klik provider yang belum dikonfigurasi menampilkan pesan sopan inline "belum diaktifkan di server" TANPA navigasi (tanpa ini browser mendarat di JSON 400 mentah /auth/v1/authorize — ditemukan saat QA). Fallback: settings gagal → tombol tetap berfungsi normal.
+- MIGRASI 0023_oauth_profiles.sql: handle_new_user diperkaya — display_name coalesce display_name → full_name → name → preferred_username → lokal email → guest_; avatar_color acak dari palet 8 warna. Diverifikasi END-TO-END di cloud: admin API buat user simulasi metadata ala Google (full_name "Simulasi OAuth") → profil "Simulasi OAuth" + #5865f2 → cleanup user + FK cascade profil bersih. (Tes scope migrations.test.ts tetap ≤0021 — 0023 file + cloud-only seperti 0022.)
+- CONFIG AUTH via Management API: site_url → https://goofy-lobby.vercel.app; redirect allowlist dipasang via field `uri_allow_list` (string koma — array ditolak 400; read-model GET tidak mengekspos): produksi + preview goofy-lobby-*.vercel.app + localhost:3000 + *.fcapp.run.
+- public/logo.svg diganti: sisa template "Z" sandbox → marka goofy (3 bar equalizer putih di ubin blurple #5865F2); favicon SVG dipasang di index.html.
+- .env lokal terhapus LAGI oleh reset sandbox → dipulihkan dari .env.production (sumber kanonik ter-commit; komentar di file menjelaskan pemulihan).
+- Docs: deploy-checklist bagian k BARU (panduan client ID/secret per penyedia: Google Cloud Console/Facebook Developers/Apple/Discord Developers, callback seragam supabase.co/auth/v1/callback, cara verifikasi allowlist) + README link.
+- QA browser: layar render 4 tombol + panel brand ✓ klik Google (provider off) → pesan sopan, URL tetap, 0 error console ✓ toggle email → form lengkap mode login/daftar ✓ VLM 8.5/10 (layout solid, catatan: logo Z → sudah diganti setelahnya) ✓ mobile 375px: kartu 343px, brand hidden, tanpa overflow ✓.
+- GERBANG: eslint ✓ typecheck ✓ vitest 845/845 (51 file) ✓ vite build ✓ dev.log bersih.
+- Commit + push via PAT user (inline, tanpa persist) → Vercel auto-deploy.
+
+Stage Summary:
+- Layar login kini persis permintaan user: tombol Google/Facebook/Apple/Discord berlogo resmi di depan, tanpa akun demo, tanpa ilustrasi karangan; email jadi jalur cadangan tersembunyi.
+- SATU hal tersisa untuk tombol Google benar-benar berfungsi (di luar kuasa agent): user harus buat OAuth client di console.cloud.google.com (5 menit, langkah di checklist k) lalu kirim Client ID+Secret — agent pasang via Management API (field external_google_enabled/client_id/secret sudah terpetakan di config).
+- Trigger 0023 live: user Google otomatis dapat nama + warna avatar; redirect allowlist siap multi-host.
+- Protokol dijaga: token admin/PAT hanya inline; .env hanya nilai publik; 0 secret di repo.

@@ -31,6 +31,10 @@ MVP web app sosial berbasis **voice chat dengan spatial audio real-time**
 ke env var Vercel / file mana pun di repo — itu bypass semua RLS dan
 akan tercetak di bundle publik. Yang publik hanya anon key.
 
+Login sosial (Google/Facebook/Apple/Discord) sudah tersedia di UI;
+mengaktifkan penyedia butuh client ID + secret — langkah per penyedia:
+[`docs/deploy-checklist.md`](docs/deploy-checklist.md) bagian k.
+
 Tanpa env sama sekali pun, aplikasi menampilkan layar setup berpandu
 (bukan white screen).
 

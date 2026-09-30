@@ -358,3 +358,47 @@ otomatis dari repo.
 dua tab): qa.alpha/bravo/charlie@goofy.example.com — password di .env
 lokal (TEST_USER_*) dan tercantum di layar masuk. Hapus via dashboard
 bila tidak mau ada di produksi.
+
+---
+
+## k. Login sosial (OAuth) — Google/Facebook/Apple/Discord (Task 37)
+
+UI sudah siap di aplikasi: tombol resmi berlogo (Google G empat warna,
+Facebook f, Apple, Discord) memanggil `signInWithOAuth` (PKCE) dengan
+`redirectTo` = origin halaman. Redirect allowlist sudah dipasang via
+Management API (`uri_allow_list`): produksi `goofy-lobby.vercel.app`,
+preview `goofy-lobby-*.vercel.app`, `localhost:3000`, `*.fcapp.run` —
+cek di dashboard: Authentication → URL Configuration → Redirect URLs.
+
+Yang dibutuhkan per provider: **client ID + secret** dari penyedia,
+dipasang di Supabase (dashboard → Authentication → Providers → aktifkan;
+atau kirim ke agent untuk dipasang via Management API). Semua provider
+memakai callback yang sama:
+
+```text
+https://llaeglakcheqxlbwvheo.supabase.co/auth/v1/callback
+```
+
+- **Google** (yang diminta user): console.cloud.google.com → buat/pilih
+  project → APIs & Services → OAuth consent screen (External, publik) →
+  Credentials → Create OAuth client ID → tipe **Web application** →
+  Authorized redirect URIs = callback di atas → copy **Client ID** +
+  **Client Secret**. Tanpa langkah ini tombol Google menampilkan pesan
+  "belum diaktifkan di server".
+- **Facebook**: developers.facebook.com → My Apps → Create App (Consumer)
+  → tambah produk **Facebook Login** → Settings → Valid OAuth Redirect
+  URIs = callback di atas → App ID + App Secret. Untuk produksi: ubah
+  mode aplikasi ke **Live**.
+- **Apple**: developer.apple.com (akun berbayar) → Certificates, IDs &
+  Profiles → buat **Services ID** (Web auth) dengan Return URL =
+  callback di atas + key `.p8` (secret = key + KEY ID + Team ID).
+- **Discord**: discord.com/developers → New Application → OAuth2 →
+  Redirects = callback di atas → Client ID (Client Secret).
+
+Profil user OAuth otomatis terisi oleh trigger `handle_new_user`
+(migrasi 0023): display_name dari `full_name`/`name`/
+`preferred_username`/email + warna avatar acak dari palet — terverifikasi
+empiris (simulasi user metadata Google → profil benar, cleanup bersih).
+
+Email/password tetap tersedia (toggle "Masuk dengan email saja") untuk
+akun terdaftar; akun demo publik dihapus dari layar login (Task 37).
