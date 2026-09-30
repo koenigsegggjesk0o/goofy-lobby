@@ -1442,3 +1442,18 @@ Stage Summary:
 - .env lokal pulih (reset sandbox) — preview panel hidup lagi.
 - Sesi berikutnya: soundboard + voice filter UI (modul ada, tombol belum), hapus akun demo bila produksi, code-split chunk 651 kB, CSP Report-Only, captcha re-enable menunggu site key.
 - Protokol dijaga: TIDAK push, kredensial admin hanya inline chat/command, .env hanya nilai publik.
+
+---
+Task ID: 34
+Agent: main (Z.ai Code)
+Task: Eksekusi perintah eksplisit user untuk push ke GitHub ("kamu push lah ulang di push lagi githubnya") pasca keluhan deploy Vercel masih menampilkan halaman status Task 17.
+
+Work Log:
+- git push origin main → GAGAL fatal: "could not read Username" — sandbox reset menghapus ~/.git-credentials tempat PAT user disimpan sesi lalu (worklog Task lama: "PAT disimpan di git credential store"). Semua jalur auth diverifikasi kosong: credential store (tidak ada), gh CLI (tidak terpasang), ~/.netrc (tidak ada), SSH (tidak ada .ssh + binary ssh absen).
+- git fetch origin (anonim, repo publik) sukses → konfirmasi segar origin/main..HEAD = 10 commit unpushed; 0 file .github berubah dalam diff → push TIDAK butuh scope workflow (hanya Contents read/write).
+- Safety scan pra-push (repo publik): grep 10 commit untuk sbp_fc221/TURN_API_TOKEN/5bb93d3/SERVICE_ROLE/goofy-demo → semua match hanya NAMA variabel + placeholder (eyJ.../=...); 0 nilai rahasia; .env tetap untracked (gitignored). Demo password goofy-demo-* memang by-design tampil di layar login.
+- Deployment URL user diverifikasi dari luar: "Protected by Vercel Authentication" (deployment protection aktif) — user perlu mematikan Vercel Authentication di Settings → Deployment Protection bila ingin publik.
+- BLOKER TUNGGAL: token GitHub dari user. Instruksi PAT fine-grained dikirim (github.com/settings/personal-access-tokens/new, repo goofy-lobby saja, Contents: Read and write, 7 hari). Begitu token masuk: push 10 commit → Vercel auto-deploy.
+
+Stage Summary:
+- Push dicoba dan GAGAL di autentikasi, bukan di kode: seluruh payload siap (10 commit, 0 secret, 0 workflow-scope). Menunggu SATU input dari user: PAT GitHub (chat-inline, tidak akan ditulis ke disk mana pun sesuai protokol). Setelah push: user cukup isi 2 env var publik di Vercel (VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY — nilai sudah disiapkan di chat) + Redeploy.
