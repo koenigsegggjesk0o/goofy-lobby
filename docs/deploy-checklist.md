@@ -295,22 +295,44 @@ dinyatakan live:
 
 ---
 
-## j. Deploy Vercel — UI produk Fase 3 (Task 32, 30 Sep 2026)
+## j. Deploy Vercel — UI produk Fase 3 (Task 32; hardening Task 33)
 
-Build produk murni: `bun install && bun run build` → `dist/` (SPA statis,
-TANPA test-harness — gating BUILD_HARNESS tetap aktif). Vercel mendeteksi
-Vite otomatis.
+**PENTING — penyebab #1 "yang muncul malah halaman aneh":** Vercel
+membangun dari GitHub, sementara repo ini punya commit lokal yang sengaja
+tidak di-push otomatis oleh agent (protokol: tidak pernah push tanpa
+perintah). Sebelum deploy, pastikan commit terbaru sudah ada di GitHub:
+
+```bash
+git log origin/main..HEAD   # harus kosong; kalau ada baris berarti belum push
+git push origin main
+```
+
+Gejala deploy memakai commit LAMA (pra-Fase 3): halaman teks polos berisi
+"Fase 1 SELESAI … tanpa UI" + daftar modul. Solusinya: push, lalu di
+Vercel buka **Deployments → ⋯ → Redeploy** (atau push commit baru).
+
+`vercel.json` sudah ada di repo (Task 33): build `bun run build`
+(tsc + vite), output `dist/`, rewrite SPA (semua path → `/index.html`
+supaya deep-link/refresh tidak 404), dan header keamanan host-level
+(HSTS, nosniff, X-Frame-Options DENY, no-referrer, Permissions-Policy
+microphone-only, COOP same-origin). Framework preset **Vite** terdeteksi
+otomatis dari repo.
 
 **Langkah:**
 
-1. Import repo GitHub ke Vercel (framework preset: **Vite**).
-2. Environment Variables (semua publik by-design):
+1. Push commit terbaru (lihat blok PENTING di atas), lalu import repo
+   GitHub ke Vercel (framework preset: **Vite**; vercel.json mengurus
+   sisanya).
+2. Settings → Environment Variables (semua publik by-design):
    - `VITE_SUPABASE_URL` = `https://llaeglakcheqxlbwvheo.supabase.co`
    - `VITE_SUPABASE_ANON_KEY` = anon key (dashboard → Settings → API)
    - `VITE_TURN_EPHEMERAL_URL` =
      `https://llaeglakcheqxlbwvheo.supabase.co/functions/v1/turn-credentials`
    - (opsional) `VITE_SENTRY_DSN`
-3. Deploy. SPA satu halaman — tidak perlu rewrite rule.
+3. Deploy. CATATAN: nilai `VITE_*` dibaca SAAT BUILD — kalau variabel
+   ditambahkan SETELAH deploy pertama, wajib **Redeploy**. Tanpa env,
+   aplikasi menampilkan layar setup berpandu langkah-demi-langkah (bukan
+   white screen) dengan tombol salin nama variabel.
 4. Supabase dashboard → Authentication → URL Configuration: tambahkan
    domain Vercel ke **Site URL** + **Redirect URLs**.
 
@@ -328,7 +350,11 @@ Vite otomatis.
   authenticated — room:{kode} tetap eksklusif tiket (P0-1 utuh).
 - Edge Function `turn-credentials` sudah live (mode REST Cloudflare,
   secrets TURN_KEY_ID/TURN_API_TOKEN terpasang, TTL 3600s).
+- CSP sengaja BELUM dipasang di vercel.json (risiko mematikan
+  audio/mesh diam-diam bila salah satu direktif terlalu ketat) —
+  rekomendasi berjenjang ada di bagian a; uji dengan Report-Only dulu.
 
 **Akun demo publik** (tombol cepat di layar masuk, untuk mencoba telepon
 dua tab): qa.alpha/bravo/charlie@goofy.example.com — password di .env
-lokal (TEST_USER_*). Hapus via dashboard bila tidak mau ada di produksi.
+lokal (TEST_USER_*) dan tercantum di layar masuk. Hapus via dashboard
+bila tidak mau ada di produksi.

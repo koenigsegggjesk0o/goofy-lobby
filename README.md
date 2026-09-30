@@ -3,15 +3,11 @@
 MVP web app sosial berbasis **voice chat dengan spatial audio real-time**
 (WebRTC mesh P2P, maks. 8 orang per room, lobby 2D dengan posisi avatar).
 
-> **Status: Fase 1 SELESAI (sistem inti) + Fase 2: TURN/observabilitas &
-> LAPISAN LOGIKA FITUR SOSIAL (friends, chat, soundboard, voicefilter,
-> payment + migrasi + skeleton webhook Paddle) — semua TANPA UI.**
-> Audit DoD Fase 1 lengkap (bukti per item): lihat [`docs/dod-audit-fase1.md`](docs/dod-audit-fase1.md).
-> Status & pemetaan file Fase 2: lihat [`docs/fase-2-fitur-logika.md`](docs/fase-2-fitur-logika.md).
-> Sesuai keputusan pemilik produk: tidak ada satu baris kode UI pun sampai
-> Fase 3. Satu-satunya halaman di dev server adalah halaman status `/`
-> (infrastruktur) dan test harness `/test-harness/` (alat uji polos untuk
-> Playwright — tanpa styling, bukan UI produk).
+> **Status: Fase 3 (UI produk) SELESAI** — aplikasi penuh di atas fondasi
+> Fase 1-2: login/daftar, cari profil, pertemanan realtime, DM, panggilan
+> suara spasial 2 arah (WebRTC mesh + TURN ephemeral Cloudflare), hub room
+> kode, pengaturan profil. Fondasi & audit: [`docs/dod-audit-fase1.md`](docs/dod-audit-fase1.md),
+> [`docs/fase-2-fitur-logika.md`](docs/fase-2-fitur-logika.md).
 
 ## Prasyarat
 
@@ -19,7 +15,22 @@ MVP web app sosial berbasis **voice chat dengan spatial audio real-time**
 - Akun free tier: [Supabase](https://supabase.com), [Cloudflare Turnstile](https://dash.cloudflare.com),
   [Sentry](https://sentry.io) (Developer plan), GitHub
 
-## Setup
+## Deploy ke Vercel (cepat)
+
+1. **Push dulu** — Vercel membangun dari GitHub: `git log origin/main..HEAD`
+   harus kosong, kalau ada baris jalankan `git push origin main`.
+   (Halaman teks polos "Fase 1 SELESAI …" di deploy = tanda kode lama.)
+2. Import repo ke Vercel (preset **Vite** terdeteksi otomatis;
+   `vercel.json` mengurus rewrite SPA + header keamanan + build).
+3. Settings → Environment Variables:
+   `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`,
+   `VITE_TURN_EPHEMERAL_URL` (nilai publik by-design — lihat
+   [`docs/deploy-checklist.md`](docs/deploy-checklist.md) bagian j), lalu
+   **Redeploy** (env `VITE_*` dibaca saat build).
+
+Tanpa env, aplikasi menampilkan layar setup berpandu (bukan white screen).
+
+## Setup lokal
 
 ```bash
 bun install

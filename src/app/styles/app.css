@@ -50,6 +50,83 @@ input, textarea {
 .enverror h1 { font-family: "ABC Ginto Nord", var(--font); }
 .enverror code { background: var(--surface-high); padding: 2px 6px; border-radius: 4px; }
 
+/* ── Layar setup env (belum terkonfigurasi) ── */
+.setup {
+  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  background: var(--bg-lowest); padding: 24px;
+  background-image: radial-gradient(60rem 40rem at 120% -10%, rgba(88,101,242,.10), transparent 60%),
+                    radial-gradient(50rem 30rem at -20% 110%, rgba(235,69,158,.08), transparent 60%);
+}
+.setup__card {
+  width: min(620px, 100%);
+  background: var(--bg-lower); border-radius: var(--radius-lg);
+  box-shadow: var(--elev-high); padding: 32px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.setup__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.setup__logo {
+  font-family: "ABC Ginto Nord", var(--font); font-size: 26px;
+  letter-spacing: -.02em; color: var(--text-default);
+}
+.setup__badge {
+  font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--text-muted); background: var(--inter-default);
+  padding: 4px 10px; border-radius: 999px;
+  max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.setup__title {
+  font-family: "ABC Ginto Nord", var(--font); font-size: 22px;
+  color: var(--text-default); margin-top: 2px;
+}
+.setup__sub { color: var(--text-muted); font-size: 14px; line-height: 1.5; }
+.setup__vars { display: flex; flex-direction: column; gap: 8px; }
+.setup__varrow {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  background: var(--surface-high); border: 1px solid var(--inter-active);
+  border-radius: var(--radius-sm); padding: 10px 12px;
+}
+.setup__varname {
+  font-family: "gg sans mono", ui-monospace, monospace; font-size: 13px;
+  color: var(--text-default); overflow-wrap: anywhere;
+}
+.setup__copy {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  font-size: 12px; font-weight: 600; color: var(--text-muted);
+  background: var(--inter-default); border-radius: var(--radius-xs);
+  padding: 5px 10px; transition: background .12s ease, color .12s ease;
+}
+.setup__copy:hover { background: var(--inter-hover); color: var(--text-default); }
+.setup__steps {
+  margin: 4px 0 0; padding: 0; list-style: none; counter-reset: setupstep;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.setup__steps li {
+  counter-increment: setupstep; position: relative;
+  padding: 10px 12px 10px 44px;
+  background: var(--inter-default); border-radius: var(--radius-sm);
+  color: var(--text-default); font-size: 14px; line-height: 1.5;
+}
+.setup__steps li::before {
+  content: counter(setupstep); position: absolute; left: 12px; top: 50%;
+  transform: translateY(-50%);
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--accent); color: #fff; font-size: 12px; font-weight: 800;
+  display: flex; align-items: center; justify-content: center;
+}
+.setup__steps code {
+  background: var(--surface-high); padding: 1px 6px; border-radius: 4px; font-size: 12.5px;
+}
+.setup__steps strong { color: var(--text-default); font-weight: 700; }
+.setup__note {
+  color: var(--text-muted); font-size: 12.5px; line-height: 1.5;
+  border-top: 1px solid var(--inter-active); padding-top: 12px;
+}
+@media (max-width: 560px) {
+  .setup { padding: 14px; }
+  .setup__card { padding: 22px; }
+  .setup__steps li { padding-left: 40px; }
+}
+
 /* ── Toasts ── */
 .toasts {
   position: fixed; right: 16px; bottom: 16px; z-index: 200;

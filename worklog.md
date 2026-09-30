@@ -1417,3 +1417,28 @@ Stage Summary:
 - Paddle DITUNDA sesuai perintah user ("nanti aja besok besok").
 - Sisa utk sesi berikutnya: re-enable captcha bila user beri site key; soundboard + voice filter UI (modul sudah ada, belum ada tombolnya); fitur premium/Paddle; HSTS/CSP host-level; hapus akun demo bila tak mau di produksi; pertimbangkan code-split (chunk 648 kB).
 - Protokol dijaga: TIDAK push (12 commit lokal unpushed sekarang), kredensial admin tidak pernah ke disk/worklog, .env hanya nilai publik klien.
+
+---
+Task ID: 33
+Agent: main (Z.ai Code)
+Task: Diagnosis keluhan user pasca-deploy Vercel ("udah di deploy yang muncul ini semau emang babi" — teks yang ditempel user = isi index.html era Task 17) + hardening "deploy langsung work".
+
+Work Log:
+- DIAGNOSIS AKAR: teks yang user tempel = `git show origin/main:index.html` PERSIS (halaman status "Fase 1 SELESAI ... tanpa UI" era Task 17). origin/main tertinggal 9 commit dari HEAD (b55084a = seluruh UI Fase 3) — agent tidak pernah push (protokol), user deploy dari GitHub → Vercel membangun kode LAMA. Faktor kedua: sandbox reset menghapus nilai VITE_* di .env lokal (sisa DATABASE_URL saja) sehingga preview lokal pun mati.
+- Pulihkan .env: anon key diambil via Management API GET /v1/projects/{ref}/api-keys?reveal=true (token sbp_ inline command saja, tidak ke disk); ditulis HANYA nilai publik klien (VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY + VITE_TURN_EPHEMERAL_URL) — pola yang sama dengan Task 32, .env gitignored, anon key by-design terekspos di bundle.
+- vercel.json BARU: framework vite, installCommand bun install, buildCommand bun run build (tsc+vite), outputDirectory dist, rewrite SPA semua path → /index.html, header keamanan host-level (HSTS, nosniff, X-Frame-Options DENY, no-referrer, Permissions-Policy microphone-only, COOP same-origin; CSP sengaja belum — checklist a merekomendasikan Report-Only dulu).
+- src/App.tsx: EnvErrorScreen dev-sentris diganti SetupScreen konteks-aware — deteksi host (localhost/.local/.fcapp.run = dev → panduan .env; host publik = panduan Vercel: Settings → Environment Variables → Redeploy, badge menampilkan hostname), baris variabel hilang dari MissingClientEnvError.missing + tombol Salin per variabel (clipboard API + fallback execCommand, umpan balik "Tersalin"), catatan env-dibaca-saat-build. Error boundary + layar error generik tetap.
+- app.css: blok .setup* (~75 baris) dalam bahasa desain yang sama (token bg-lower/surface-high/inter-*/radius/accent, font ABC Ginto Nord + gg sans mono, radial gradient ala auth, step counter bulat, responsive ≤560px).
+- docs/deploy-checklist.md bagian j ditulis ulang: blok PENTING penyebab-#1 (deploy = kode lama; `git log origin/main..HEAD` harus kosong; gejala = halaman teks status), vercel.json dijelaskan, catatan redeploy wajib setelah isi env, CSP belum-dipasang dijelaskan.
+- README.md: status stale "TANPA UI" diganti "Fase 3 SELESAI" + seksi "Deploy ke Vercel (cepat)" 3 langkah (push → import → env + redeploy).
+- QA BROWSER (agent-browser): login demo Alya → app shell penuh (topbar badge unread 2, rail, sidebar DM "Kamu: tes poke realtime!" unread 2, friends tab Online/Semua 3/Menunggu/Tambah Teman) ✓ · cari profil "Bagas" → hasil + chip "Sudah teman" ✓ · DM Bagas: riwayat grup + divider hari + kartu undangan room (3 kode lama) + garis sistem + kirim pesan baru tampil ✓ · tombol "Telepon Bagas" ada di header DM ✓ · Hub: buat room + gabung kode + penjelasan spasial ✓ · 0 page error, 0 console error.
+- QA SETUP SCREEN: build tanpa env (VITE_SUPABASE_URL= kosong → dist-noenv, disajikan python http.server 3001): varian dev (localhost) tampil dengan 3 langkah .env ✓ · varian produksi via localtest.me (host non-dev) tampil dengan 3 langkah Vercel + badge LOCALTEST.ME ✓ · tombol Salin berubah "Tersalin" ✓ · evaluasi VLM 9/10 (kartu center, langkah terbaca, nol overlap). dist-noenv + screenshot QA dihapus.
+- GERBANG: eslint ✓ typecheck ✓ vitest 845/845 (51 file) ✓ vite build ✓ dist bersih tanpa harness ✓ dev.log 0 error ✓.
+- Cloud diverifikasi live: Edge Function turn-credentials 401 tanpa token (auth gate benar).
+
+Stage Summary:
+- AKAR MASALAH USER TERJAWAB TUNTAS: deploy Vercel menampilkan kode Task 17 karena origin/main 9 commit di belakang HEAD — SOLUSI USER: `git push origin main` sendiri lalu Redeploy (agent tidak push tanpa perintah; kalau user bilang "push", agent pushin). Setelah push + 2 env var di Vercel (VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY) deploy langsung work.
+- Deploy-readiness naik level: vercel.json (rewrite SPA + header keamanan + build eksplisit), layar setup berpandu menggantikan white-screen bila env lupa diisi, dokumen push-first di README + checklist j.
+- .env lokal pulih (reset sandbox) — preview panel hidup lagi.
+- Sesi berikutnya: soundboard + voice filter UI (modul ada, tombol belum), hapus akun demo bila produksi, code-split chunk 651 kB, CSP Report-Only, captcha re-enable menunggu site key.
+- Protokol dijaga: TIDAK push, kredensial admin hanya inline chat/command, .env hanya nilai publik.
