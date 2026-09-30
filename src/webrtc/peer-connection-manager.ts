@@ -39,6 +39,14 @@ export const DEFAULT_SELECTED_PAIR_RESAMPLE_MS = 1_500;
  */
 const MAX_PENDING_REMOTE_CANDIDATES = 50;
 
+/**
+ * Batas track audio remote yang disimpan per peer (remediasi 25-c M4 —
+ * block-muting perlu referensi track untuk track.enabled=false). Track audio
+ * sah hanya 1 per peer (mesh suara); >1 adalah anomali/serangan — yang
+ * tertua dibuang, muting tetap berlaku untuk sisanya.
+ */
+const MAX_REMOTE_AUDIO_TRACKS_PER_PEER = 8;
+
 type Timer = ReturnType<typeof setTimeout>;
 
 interface ManagedPeer {
@@ -68,6 +76,19 @@ interface ManagedPeer {
   pairSampleTimer: Timer | null;
   /** Signature pasangan terakhir yang dipancarkan — dedupe emisi berulang. */
   lastPairSignature: string | null;
+  /**
+   * Block-muting (remediasi 25-c M4): true = audio dua arah dengan peer ini
+   * dimatikan (track remote masuk di-disabled + sender audio kita
+   * replaceTrack(null)).
+   */
+  muted: boolean;
+  /** Track audio REMOTE masuk dari peer ini — untuk enabled=false saat mute. */
+  remoteAudioTracks: MediaStreamTrack[];
+  /**
+   * Sender audio kita yang di-nul-kan saat mute + track aslinya — dipakai
+   * untuk memulihkan replaceTrack saat unmute.
+   */
+  mutedOutgoing: Array<{ sender: RTCRtpSender; track: MediaStreamTrack | null }>;
 }
 
 export interface PeerConnectionManagerOptions {
@@ -190,6 +211,19 @@ export class PeerConnectionManager {
     return peer === undefined ? [] : [...peer.pc.getSenders()];
   }
 
+  /** Apakah peer sedang di-mute (block-muting 25-c M4). Peer tak dikenal → false. */
+  isPeerMuted(sessionId: string): boolean {
+    return this.peers.get(sessionId)?.muted ?? false;
+  }
+
+  /**
+   * Counter pesan inbound DataChannel yang di-drop per peer (hardening 25-c) —
+   * passthrough ke DataChannelSync milik peer. Peer tak dikenal → null.
+   */
+  getInboundDropCounts(sessionId: string): { oversize: number; overrate: number } | null {
+    return this.peers.get(sessionId)?.sync?.getInboundDropCounts() ?? null;
+  }
+
   // ============================================================
   // Lifecycle peer
   // ============================================================
@@ -222,6 +256,9 @@ export class PeerConnectionManager {
       connectedSampled: false,
       pairSampleTimer: null,
       lastPairSignature: null,
+      muted: false,
+      remoteAudioTracks: [],
+      mutedOutgoing: [],
       restart: new IceRestartHandler({
         getConnectionState: () => pc.connectionState,
         getIceConnectionState: () => pc.iceConnectionState,
@@ -322,6 +359,10 @@ export class PeerConnectionManager {
   detachLocalStream(): void {
     this.localStream = null;
     for (const peer of this.peers.values()) {
+      // Peer yang di-mute: sender-nya sudah null; buang referensi track
+      // tersimpan supaya unmute TIDAK membangkitkan track yang sudah mati
+      // (track lokal sudah dilepas pemanggilnya).
+      peer.mutedOutgoing = [];
       for (const sender of peer.pc.getSenders()) {
         if (sender.track !== null) {
           void sender.replaceTrack(null).catch((error: unknown) => {
@@ -330,6 +371,59 @@ export class PeerConnectionManager {
         }
       }
     }
+  }
+
+  // ============================================================
+  // Block-muting per peer (remediasi 25-c M4)
+  // ============================================================
+
+  /**
+   * Menyalakan/mematikan audio DUA ARAH dengan satu peer (block-muting):
+   * - muted=true: setiap track audio remote dari peer itu di-disabled
+   *   (enabled=false — track tetap hidup, bisa dipulihkan) DAN semua sender
+   *   audio kita ke peer itu di-null-kan (replaceTrack(null) — lawan tidak
+   *   lagi menerima suara kita; transceiver tetap ada);
+   * - muted=false: track remote di-enable kembali + sender dipulihkan
+   *   memakai track audio lokal TERKINI (fallback: track tersimpan saat
+   *   mute — berguna bila localStream tidak berubah).
+   *
+   * Idempoten; peer tak dikenal → no-op (dipanggil dari event roster).
+   */
+  setPeerMuted(sessionId: string, muted: boolean): void {
+    const peer = this.peers.get(sessionId);
+    if (peer === undefined) {
+      return;
+    }
+    peer.muted = muted;
+    // (1) Track audio remote masuk dari peer ini.
+    for (const track of peer.remoteAudioTracks) {
+      track.enabled = !muted;
+    }
+    // (2) Kiriman audio kita ke peer ini.
+    if (muted) {
+      for (const sender of peer.pc.getSenders()) {
+        if (sender.track === null) {
+          continue; // sudah senyap (belum attach / transceiver recvonly)
+        }
+        peer.mutedOutgoing.push({ sender, track: sender.track });
+        void sender.replaceTrack(null).catch((error: unknown) => {
+          this.onError?.(peer.session.sessionId, 'replace-track', error);
+        });
+      }
+    } else {
+      const restore = this.currentLocalAudioTrack() ?? peer.mutedOutgoing[0]?.track ?? null;
+      for (const { sender, track } of peer.mutedOutgoing) {
+        void sender.replaceTrack(restore ?? track).catch((error: unknown) => {
+          this.onError?.(peer.session.sessionId, 'replace-track', error);
+        });
+      }
+      peer.mutedOutgoing = [];
+    }
+  }
+
+  /** Track audio lokal terkini (null bila belum ada stream lokal). */
+  private currentLocalAudioTrack(): MediaStreamTrack | null {
+    return this.localStream?.getTracks().find((track) => track.kind === 'audio') ?? null;
   }
 
   // ============================================================
@@ -374,6 +468,17 @@ export class PeerConnectionManager {
     });
 
     pc.addEventListener('track', (event) => {
+      // Simpan track audio remote untuk block-muting (25-c M4) — bila peer
+      // sedang di-mute, track langsung di-disabled sejak diterima.
+      if (event.track.kind === 'audio') {
+        if (peer.remoteAudioTracks.length >= MAX_REMOTE_AUDIO_TRACKS_PER_PEER) {
+          peer.remoteAudioTracks.shift(); // anomali (audio > 1 per peer) — buang terlama
+        }
+        peer.remoteAudioTracks.push(event.track);
+        if (peer.muted) {
+          event.track.enabled = false;
+        }
+      }
       this.onTrack(peer.session.sessionId, event.track, event.streams[0] ?? null);
     });
 
@@ -400,6 +505,8 @@ export class PeerConnectionManager {
     peer.sync = new DataChannelSync(dc, {
       onPosition: (position) => this.onPosition(peer.session.sessionId, position),
       onInvalid: (reason) => this.onInvalidPosition?.(peer.session.sessionId, reason),
+      // Label untuk warn sekali-per-peer hardening inbound (25-c).
+      peerLabel: peer.session.sessionId,
     });
   }
 
@@ -512,6 +619,12 @@ export class PeerConnectionManager {
   private attachLocalTracks(peer: ManagedPeer): void {
     const stream = this.localStream;
     if (stream === null) {
+      return;
+    }
+    // Peer yang sedang di-mute (25-c M4) sengaja TIDAK diberi track baru —
+    // memberi track di sini akan membuka suara kita kembali tanpa unmute.
+    // Unmute (setPeerMuted(false)) yang memulihkan pengiriman.
+    if (peer.muted) {
       return;
     }
     for (const track of stream.getTracks()) {

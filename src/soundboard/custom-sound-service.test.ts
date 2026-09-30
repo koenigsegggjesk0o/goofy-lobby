@@ -1,13 +1,29 @@
 import { describe, expect, it } from 'vitest';
 import { CustomSoundService } from './custom-sound-service';
 import { FakeStorageBucket, FakeStorageClient } from './test-utils';
-import { MAX_CUSTOM_SOUND_BYTES } from './types';
+import {
+  MAX_CUSTOM_SOUND_BYTES,
+  MAX_CUSTOM_SOUND_FILES,
+  MAX_CUSTOM_SOUND_TOTAL_BYTES,
+  STORAGE_LIST_PAGE_SIZE,
+} from './types';
 
 const USER = '7db26a0a-9ce5-4558-bd08-9612e9e9febe';
 const NOW_MS = 1_758_000_000_000;
+const MIB = 1024 * 1024;
 
 function audioBlob(bytes: number, type = 'audio/webm'): Blob {
   return new Blob([new Uint8Array(bytes)], { type });
+}
+
+/** Menyemai n file kecil milik USER (utk penghitungan kuota). */
+function seedFiles(bucket: FakeStorageBucket, count: number, bytesPerFile = 1024): void {
+  for (let i = 0; i < count; i += 1) {
+    bucket.objects.set(`${USER}/sound-${String(i).padStart(4, '0')}.mp3`, {
+      size: bytesPerFile,
+      contentType: 'audio/mpeg',
+    });
+  }
 }
 
 function setup(options: { bucket?: FakeStorageBucket } = {}) {
@@ -185,6 +201,77 @@ describe('CustomSoundService.listCustomSoundNames', () => {
       bucket: new FakeStorageBucket({ failListWith: { message: 'list denied' } }),
     });
     await expect(service.listCustomSoundNames(USER)).rejects.toMatchObject({
+      code: 'storage-error',
+      message: expect.stringContaining('list denied'),
+    });
+  });
+});
+
+describe('CustomSoundService — kuota per-user (audit 25 M1)', () => {
+  it('di bawah kuota → upload lanjut (satu halaman list lalu upload)', async () => {
+    const { bucket, service } = setup();
+    seedFiles(bucket, MAX_CUSTOM_SOUND_FILES - 1);
+    await expect(
+      service.uploadCustomSound(USER, audioBlob(256, 'audio/mpeg')),
+    ).resolves.toMatchObject({ bytes: 256 });
+    expect(bucket.uploadCalls).toHaveLength(1);
+    expect(bucket.listCalls).toEqual([
+      { folder: `${USER}/`, options: { limit: STORAGE_LIST_PAGE_SIZE, offset: 0 } },
+    ]);
+  });
+
+  it('list 2 halaman (folder > 100 objek) → tetap terhitung penuh lalu over-quota ditolak', async () => {
+    const { bucket, service } = setup();
+    // 130 file kecil → halaman 1 (100) + halaman 2 (30) → 130 ≥ 30 file.
+    seedFiles(bucket, STORAGE_LIST_PAGE_SIZE + 30);
+    await expect(service.uploadCustomSound(USER, audioBlob(256))).rejects.toMatchObject({
+      code: 'quota_exceeded',
+      message: expect.stringContaining(`maksimum ${MAX_CUSTOM_SOUND_FILES} file`),
+    });
+    expect(bucket.uploadCalls).toHaveLength(0);
+    expect(bucket.listCalls).toEqual([
+      { folder: `${USER}/`, options: { limit: STORAGE_LIST_PAGE_SIZE, offset: 0 } },
+      { folder: `${USER}/`, options: { limit: STORAGE_LIST_PAGE_SIZE, offset: 100 } },
+    ]);
+  });
+
+  it('jumlah file tepat MAX_FILES → unggahan berikutnya ditolak quota_exceeded', async () => {
+    const { bucket, service } = setup();
+    seedFiles(bucket, MAX_CUSTOM_SOUND_FILES);
+    await expect(service.uploadCustomSound(USER, audioBlob(256))).rejects.toMatchObject({
+      code: 'quota_exceeded',
+    });
+    expect(bucket.uploadCalls).toHaveLength(0);
+  });
+
+  it('total byte melebihi MAX_TOTAL_BYTES → ditolak quota_exceeded (pesan ramah)', async () => {
+    const { bucket, service } = setup();
+    // 3 × 60 MiB = 180 MiB terpakai > cap 150 MiB — unggahan apa pun ditolak.
+    seedFiles(bucket, 3, 60 * MIB);
+    await expect(service.uploadCustomSound(USER, audioBlob(1024))).rejects.toMatchObject({
+      code: 'quota_exceeded',
+      message: expect.stringContaining('hapus sound lama'),
+    });
+    expect(bucket.uploadCalls).toHaveLength(0);
+  });
+
+  it('total byte TEPAT di batas → masih diizinkan (batas = tidak melebihi)', async () => {
+    const { bucket, service } = setup();
+    // 29 file × 5 MiB = 145 MiB; unggahan 5 MiB → tepat 150 MiB = cap.
+    seedFiles(bucket, MAX_CUSTOM_SOUND_FILES - 1, MAX_CUSTOM_SOUND_BYTES);
+    const exact =
+      MAX_CUSTOM_SOUND_TOTAL_BYTES - (MAX_CUSTOM_SOUND_FILES - 1) * MAX_CUSTOM_SOUND_BYTES;
+    await expect(service.uploadCustomSound(USER, audioBlob(exact))).resolves.toMatchObject({
+      bytes: exact,
+    });
+    expect(bucket.uploadCalls).toHaveLength(1);
+  });
+
+  it('error list saat penghitungan kuota → dibungkus storage-error, upload batal', async () => {
+    const { service } = setup({
+      bucket: new FakeStorageBucket({ failListWith: { message: 'list denied' } }),
+    });
+    await expect(service.uploadCustomSound(USER, audioBlob(256))).rejects.toMatchObject({
       code: 'storage-error',
       message: expect.stringContaining('list denied'),
     });

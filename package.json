@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --port 3000 --strictPort 2>&1 | tee dev.log",
     "build": "tsc --noEmit && vite build",
+    "build:harness": "tsc --noEmit && BUILD_HARNESS=1 vite build",
     "preview": "vite preview --port 3000 --strictPort",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",

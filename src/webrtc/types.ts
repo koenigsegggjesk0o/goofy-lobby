@@ -24,6 +24,32 @@ export const POSITION_MAX_BUFFERED_AMOUNT = 64 * 1024;
 /** Batas absolut koordinat dunia (ruang virtual persegi, dua dimensi). */
 export const WORLD_BOUND = 10_000;
 
+/**
+ * Batas VALIDASI koordinat inbound (remediasi audit 25-c, LOW):
+ * |x|,|y| ≤ WORLD_COORD_MAX atau pesan posisi DITOLAK di skema.
+ * Sengaja LEBIH LONGGAR daripada WORLD_BOUND (10_000): jalur lokal + audio
+ * tetap di-clamp ketat ke WORLD_BOUND (clampPosition + sanitizePosition di
+ * src/audio), sedangkan jalur INBOUND (posisi remote → jalur render, yang
+ * tidak melewati clamp) kini punya batas tolak eksplisit — sebelumnya
+ * `z.number().finite()` masih menerima koordinat sebesar 1e300 (finite
+ * tapi tak bermakna; audit: render path unbounded). 100.000 memberi ruang
+ * untuk variasi model dunia antar klien tanpa membuka junk numerik.
+ */
+export const WORLD_COORD_MAX = 100_000;
+
+/** Panjang maksimum string SDP offer/answer (128 KiB — remediasi 25-c LOW). */
+export const SDP_MAX_LENGTH = 131_072;
+
+/**
+ * Panjang maksimum string kandidat ICE inbound. Kandidat nyata (IPv6 +
+ * atribut raddr/rport/generation/ufrag/network-cost) ~< 300 karakter;
+ * 512 memberi margin tanpa membuka payload raksasa.
+ */
+export const ICE_CANDIDATE_MAX_LENGTH = 512;
+
+/** Panjang maksimum field string pendek ICE (sdpMid, usernameFragment). */
+export const ICE_FIELD_MAX_LENGTH = 256;
+
 /** Nama event broadcast Supabase Realtime untuk signaling WebRTC. */
 export const SIGNAL_EVENT = 'signal';
 
@@ -82,13 +108,36 @@ export const SessionInfoSchema = z.object({
   avatarColor: AvatarColorSchema,
 });
 
-/** Posisi 2D di ruang virtual. */
+/**
+ * Posisi 2D di ruang virtual — INBOUND (dari peer jaringan) wajib finite
+ * DAN di dalam batas |x|,|y| ≤ WORLD_COORD_MAX (remediasi 25-c: sebelumnya
+ * unbounded di jalur render; clamp ±WORLD_BOUND hanya berlaku di jalur
+ * lokal/audio). Nilai di luar batas DITOLAK di skema, bukan di-clamp —
+ * koordinat sah tidak pernah sedekat itu dengan batas.
+ */
 export const PositionSchema = z.object({
-  x: z.number().finite(),
-  y: z.number().finite(),
+  x: z
+    .number()
+    .finite()
+    .min(-WORLD_COORD_MAX, `x di luar batas dunia (|x| ≤ ${WORLD_COORD_MAX})`)
+    .max(WORLD_COORD_MAX, `x di luar batas dunia (|x| ≤ ${WORLD_COORD_MAX})`),
+  y: z
+    .number()
+    .finite()
+    .min(-WORLD_COORD_MAX, `y di luar batas dunia (|y| ≤ ${WORLD_COORD_MAX})`)
+    .max(WORLD_COORD_MAX, `y di luar batas dunia (|y| ≤ ${WORLD_COORD_MAX})`),
 });
 
-const SdpSchema = z.string().min(1);
+/**
+ * String SDP offer/answer — min 1, maks SDP_MAX_LENGTH (remediasi 25-c LOW:
+ * sebelumnya tanpa max; platform broadcast membatasi payload ~256 KiB, tapi
+ * biaya parse/antre tetap ada — 128 KiB jauh di atas SDP mesh audio nyata
+ * (~4-8 KiB) dan di bawah batas platform).
+ */
+const SdpSchema = z
+  .string()
+  .min(1)
+  .max(SDP_MAX_LENGTH, `sdp terlalu panjang (maksimum ${SDP_MAX_LENGTH} karakter)`);
 
 /**
  * Pesan signaling WebRTC yang lewat broadcast Supabase Realtime.
@@ -114,10 +163,29 @@ export const SignalMessageSchema = z.discriminatedUnion('type', [
     type: z.literal('ice'),
     from: SessionIdSchema,
     to: SessionIdSchema,
-    candidate: z.string().nullable(),
-    sdpMid: z.string().nullable(),
+    candidate: z
+      .string()
+      .max(
+        ICE_CANDIDATE_MAX_LENGTH,
+        `candidate terlalu panjang (maksimum ${ICE_CANDIDATE_MAX_LENGTH} karakter)`,
+      )
+      .nullable(),
+    sdpMid: z
+      .string()
+      .max(
+        ICE_FIELD_MAX_LENGTH,
+        `sdpMid terlalu panjang (maksimum ${ICE_FIELD_MAX_LENGTH} karakter)`,
+      )
+      .nullable(),
     sdpMLineIndex: z.number().int().nullable(),
-    usernameFragment: z.string().nullable().optional(),
+    usernameFragment: z
+      .string()
+      .max(
+        ICE_FIELD_MAX_LENGTH,
+        `usernameFragment terlalu panjang (maksimum ${ICE_FIELD_MAX_LENGTH} karakter)`,
+      )
+      .nullable()
+      .optional(),
   }),
   z.object({
     v: z.literal(PROTOCOL_VERSION),
@@ -163,6 +231,14 @@ export interface MeshRoomEventMap {
   'invalid-signal': { reason: string };
   'invalid-position': { sessionId: string; reason: string };
   'room-full': { size: number; max: number };
+  /**
+   * Block-muting (remediasi 25-c M4): audio dua arah dengan peer ini
+   * dinyalakan/dimatikan karena daftar blokir (remote track di-disable +
+   * sender audio kita replaceTrack(null)). Dipancarkan hanya saat status
+   * BERUBAR — jalur trail/harness bisa memetakannya ke breadcrumb
+   * (mesh-trail) tanpa derau.
+   */
+  'peer-muted': { sessionId: string; muted: boolean };
   /**
    * Pasangan kandidat terpilih berhasil dibaca untuk sebuah peer (Task 11-b).
    * `pair` selalu non-null: sampul null (belum ada pasangan / getStats gagal)

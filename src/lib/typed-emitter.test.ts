@@ -77,6 +77,50 @@ describe('Emitter', () => {
     errorSpy.mockRestore();
   });
 
+  it('log error listener hanya ringkasan name+message, bukan objek mentah (remediasi 25-a)', () => {
+    const emitter = new TestEmitter();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    emitter.on('ping', () => {
+      throw new Error('boom');
+    });
+
+    emitter.triggerPing(1);
+
+    // Argumen ketiga = string "Error: boom" — objek Error mentah tidak diteruskan.
+    const logged = errorSpy.mock.calls[0]?.[2];
+    expect(typeof logged).toBe('string');
+    expect(logged).toBe('Error: boom');
+    errorSpy.mockRestore();
+  });
+
+  it('ringkasan dipotong 500 char — pesan raksasa tidak membanjiri log', () => {
+    const emitter = new TestEmitter();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    emitter.on('ping', () => {
+      throw new Error('x'.repeat(2000));
+    });
+
+    emitter.triggerPing(1);
+
+    const logged = errorSpy.mock.calls[0]?.[2];
+    expect(typeof logged).toBe('string');
+    expect((logged as string).length).toBe(500);
+    errorSpy.mockRestore();
+  });
+
+  it('error non-Error di-log sebagai String() ringkas', () => {
+    const emitter = new TestEmitter();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    emitter.on('ping', () => {
+      throw 'gagal-dengan-string';
+    });
+
+    emitter.triggerPing(1);
+
+    expect(errorSpy.mock.calls[0]?.[2]).toBe('gagal-dengan-string');
+    errorSpy.mockRestore();
+  });
+
   it('clear() menghapus semua listener', () => {
     const emitter = new TestEmitter();
     const a = vi.fn();

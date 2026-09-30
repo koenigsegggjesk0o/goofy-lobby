@@ -1,0 +1,16 @@
+{
+  // Import map Edge Function account-erasure — versi PERSIS sama dengan
+  // package.json proyek (jangan drift saat upgrade dependency).
+  "imports": {
+    "zod": "npm:zod@4.6.5",
+    "@supabase/supabase-js": "npm:@supabase/supabase-js@2.117.2"
+  },
+  // Layanan src/account/erasure-service.ts mengimpor konstanta dari
+  // ../profile/types dan ../soundboard/types TANPA ekstensi file
+  // (konvensi tsc moduleResolution "bundler" proyek Vite; profile/types
+  // juga mengimpor zod — hence pemetaan di atas). Deno memerlukan
+  // sloppy-imports untuk me-resolve import tersebut saat deploy.
+  // Runtime Deno terpisah dari proyek; pemeriksaan tipe dilakukan via
+  // Supabase CLI saat deploy.
+  "unstable": ["sloppy-imports"]
+}

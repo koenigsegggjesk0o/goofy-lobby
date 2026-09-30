@@ -208,6 +208,29 @@ describe('MessageService.sendMessage', () => {
     });
   });
 
+  it('error DB "RATE_LIMITED_MESSAGES" (trigger 0019) dipetakan ke rate-limited + retryAfterMs 10 detik', async () => {
+    const dbError = { message: 'RATE_LIMITED_MESSAGES', code: 'P0001' };
+    const client = new FakeChatClient({
+      friendships: [friendship(ALICE, BOB)],
+      failInsertWith: dbError,
+    });
+    const service = makeService(client);
+
+    const error = await captureError(() => service.sendMessage(ALICE, BOB, 'halo'));
+
+    // Rate limiter LOKAL mengizinkan (stub ALLOW) — ini justru jalurnya:
+    // limit client bisa di-bypass (tab ganda/skrip), server yang menampar.
+    expect(error).toBeInstanceOf(ChatError);
+    expect(error).toMatchObject({
+      code: 'rate-limited',
+      retryAfterMs: 10_000,
+      cause: dbError,
+    });
+    // Pesan bawaan tidak membocorkan pesan/errcode mentah server.
+    expect(error).toMatchObject({ message: expect.stringContaining('10 detik') });
+    expect(error).toMatchObject({ message: expect.not.stringContaining('P0001') });
+  });
+
   it('error DB code 23514 (check_violation) dipetakan ke self', async () => {
     const client = new FakeChatClient({
       friendships: [friendship(ALICE, BOB)],

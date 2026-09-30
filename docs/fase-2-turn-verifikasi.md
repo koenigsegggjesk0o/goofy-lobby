@@ -8,8 +8,12 @@
 ## Prasyarat
 
 1. `VITE_TURN_URL` / `VITE_TURN_USERNAME` / `VITE_TURN_CREDENTIAL` terisi
-   di `.env` (grup "TURN Fase 2" — lihat `.env.example`). Kredensial
-   Metered dari dashboard Anda.
+   di `.env` (grup "TURN Fase 2" — lihat `.env.example`). Untuk verifikasi
+   offline TANPA akun eksternal, gunakan rig TURN lokal (P0-2 — lihat
+   bagian "Validasi TANPA akun eksternal" di bawah). Untuk produksi,
+   rekomendasi riset 22-f (diperkuat audit 25-c): **Cloudflare Calls TURN
+   dengan kredensial ephemeral** — kredensial statis di bundle klien
+   tergolong denial-of-wallet (lihat `docs/deploy-checklist.md` seksi c).
 2. `bun run doctor` — grup TURN harus menampilkan lengkap 3/3.
 
 ## Langkah
@@ -139,5 +143,10 @@ hanya alat validasi dev.
   sandbox (TCP timeout; DNS normal; metered.ca utama 200 OK), sehingga
   koneksi relay gagal dan dilaporkan jujur `TURN TIDAK terverifikasi ❌`
   exit 1 — perilaku yang BENAR untuk "server tak terjangkau".
-- Bukti penuh `relay ✅` menunggu kredensial Metered Anda: isi env →
-  `bun run doctor` → `bun run probe:webrtc --turn`.
+- ~~Bukti penuh `relay ✅` menunggu kredensial Metered Anda~~ **UPDATE 26-e:**
+  bukti penuh `relay ✅` SUDAH dicapai offline lewat rig lokal P0-2
+  (bagian di atas — UDP dan TCP/TLS). Untuk bukti PRODUKSI, jalur yang
+  direkomendasikan kini Cloudflare Calls TURN ephemeral (riset 22-f,
+  audit 25-c) — langkah sisi-cloud terdokumentasi di
+  `docs/deploy-checklist.md` seksi c; setelah aktif, verifikasi dengan
+  `bun run doctor` → `bun run probe:webrtc --turn` yang sama.

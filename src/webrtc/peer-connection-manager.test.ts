@@ -814,3 +814,207 @@ describe('PeerConnectionManager — ketangguhan broadcast posisi (15-a)', () => 
     manager.closeAll();
   });
 });
+
+// ============================================================
+// Block-muting per peer (remediasi audit 25-c M4)
+// ============================================================
+
+describe('PeerConnectionManager — setPeerMuted (25-c M4)', () => {
+  it('mute: track audio remote di-disable + sender audio kita replaceTrack(null)', async () => {
+    const pc = new FakeRTCPeerConnection();
+    const wire = makeManager(sessionA.sessionId, pc);
+    wire.manager.attachLocalStream(makeStream());
+    wire.manager.addPeer(sessionB, true);
+    await flush();
+
+    const remoteTrack = {
+      kind: 'audio',
+      id: 'remote-mic',
+      enabled: true,
+    } as unknown as MediaStreamTrack;
+    pc.fire('track', { track: remoteTrack, streams: [] });
+    const sender = pc.senders[0];
+    if (sender === undefined) {
+      throw new Error('sender audio lokal belum terpasang');
+    }
+    expect(sender.track).not.toBeNull();
+
+    wire.manager.setPeerMuted(sessionB.sessionId, true);
+    await flush();
+
+    expect(wire.manager.isPeerMuted(sessionB.sessionId)).toBe(true);
+    // (1) remote masuk: enabled=false (track tetap hidup — bisa dipulihkan).
+    expect((remoteTrack as { enabled: boolean }).enabled).toBe(false);
+    // (2) kiriman kita: replaceTrack(null) pada sender audio.
+    expect(sender.track).toBeNull();
+    expect(sender.replaced).toContain(null);
+  });
+
+  it('unmute: track remote di-enable kembali + sender dipulihkan dari track lokal terkini', async () => {
+    const pc = new FakeRTCPeerConnection();
+    const wire = makeManager(sessionA.sessionId, pc);
+    // Stream dengan track STABIL (getTracks mengembalikan objek yang sama).
+    const localTrack = makeTrack();
+    const stream = { getTracks: () => [localTrack] } as unknown as MediaStream;
+    wire.manager.attachLocalStream(stream);
+    wire.manager.addPeer(sessionB, true);
+    await flush();
+
+    const remoteTrack = {
+      kind: 'audio',
+      id: 'remote-mic',
+      enabled: true,
+    } as unknown as MediaStreamTrack;
+    pc.fire('track', { track: remoteTrack, streams: [] });
+    const sender = pc.senders[0];
+    if (sender === undefined) {
+      throw new Error('sender audio lokal belum terpasang');
+    }
+
+    wire.manager.setPeerMuted(sessionB.sessionId, true);
+    await flush();
+    wire.manager.setPeerMuted(sessionB.sessionId, false);
+    await flush();
+
+    expect(wire.manager.isPeerMuted(sessionB.sessionId)).toBe(false);
+    expect((remoteTrack as { enabled: boolean }).enabled).toBe(true);
+    expect(sender.track).toBe(localTrack); // pulih dari localStream terkini
+  });
+
+  it('unmute setelah stream lokal berganti saat muted → track TERBARU yang dipasang', async () => {
+    const pc = new FakeRTCPeerConnection();
+    const wire = makeManager(sessionA.sessionId, pc);
+    const trackLama = makeTrack();
+    wire.manager.attachLocalStream({ getTracks: () => [trackLama] } as unknown as MediaStream);
+    wire.manager.addPeer(sessionB, true);
+    await flush();
+    wire.manager.setPeerMuted(sessionB.sessionId, true);
+    await flush();
+
+    // Pemanggil mengganti mikrofon saat masih muted — attachLocalTracks
+    // sengaja melewati peer muted, tapi localStream tersimpan.
+    const trackBaru = makeTrack();
+    wire.manager.attachLocalStream({ getTracks: () => [trackBaru] } as unknown as MediaStream);
+
+    wire.manager.setPeerMuted(sessionB.sessionId, false);
+    await flush();
+
+    const sender = pc.senders[0];
+    if (sender === undefined) {
+      throw new Error('sender audio lokal belum terpasang');
+    }
+    expect(sender.track).toBe(trackBaru); // terkini menang, bukan yang tersimpan saat mute
+    expect(sender.track).not.toBe(trackLama);
+  });
+
+  it('track audio remote baru saat muted langsung di-disabled sejak diterima', async () => {
+    const pc = new FakeRTCPeerConnection();
+    const wire = makeManager(sessionA.sessionId, pc);
+    wire.manager.addPeer(sessionB, true);
+    wire.manager.setPeerMuted(sessionB.sessionId, true);
+
+    const lateTrack = {
+      kind: 'audio',
+      id: 'remote-late',
+      enabled: true,
+    } as unknown as MediaStreamTrack;
+    pc.fire('track', { track: lateTrack, streams: [] });
+
+    expect((lateTrack as { enabled: boolean }).enabled).toBe(false);
+  });
+
+  it('attachLocalStream saat muted TIDAK membuka suara kembali (unmute yang memulihkan)', async () => {
+    const pc = new FakeRTCPeerConnection();
+    const wire = makeManager(sessionA.sessionId, pc);
+    wire.manager.attachLocalStream(makeStream());
+    wire.manager.addPeer(sessionB, true);
+    await flush();
+    wire.manager.setPeerMuted(sessionB.sessionId, true);
+    await flush();
+
+    const sender = pc.senders[0];
+    if (sender === undefined) {
+      throw new Error('sender audio lokal belum terpasang');
+    }
+    expect(sender.track).toBeNull();
+
+    // Pemanggil memasang stream BARU (mis. ganti mikrofon) saat masih muted.
+    wire.manager.attachLocalStream(makeStream());
+    await flush();
+
+    expect(sender.track).toBeNull(); // tetap senyap
+    expect(wire.manager.isPeerMuted(sessionB.sessionId)).toBe(true);
+  });
+
+  it('detachLocalStream saat muted → unmute tidak membangkitkan track mati', async () => {
+    const pc = new FakeRTCPeerConnection();
+    const wire = makeManager(sessionA.sessionId, pc);
+    wire.manager.attachLocalStream(makeStream());
+    wire.manager.addPeer(sessionB, true);
+    await flush();
+    wire.manager.setPeerMuted(sessionB.sessionId, true);
+    await flush();
+
+    wire.manager.detachLocalStream();
+    await flush();
+    wire.manager.setPeerMuted(sessionB.sessionId, false);
+    await flush();
+
+    const sender = pc.senders[0];
+    if (sender === undefined) {
+      throw new Error('sender audio lokal belum terpasang');
+    }
+    expect(sender.track).toBeNull(); // tidak ada track yang dibangkitkan
+  });
+
+  it('setPeerMuted idempoten + peer tak dikenal → no-op', () => {
+    const pc = new FakeRTCPeerConnection();
+    const wire = makeManager(sessionA.sessionId, pc);
+    wire.manager.addPeer(sessionB, true);
+
+    expect(() => wire.manager.setPeerMuted('session-asing-9999', true)).not.toThrow();
+    wire.manager.setPeerMuted(sessionB.sessionId, true);
+    wire.manager.setPeerMuted(sessionB.sessionId, true); // kedua kali: sender tetap satu null
+
+    expect(wire.manager.isPeerMuted(sessionB.sessionId)).toBe(true);
+    expect(wire.manager.getInboundDropCounts(sessionB.sessionId)).toBeNull(); // tanpa DataChannel
+  });
+
+  it('track video remote tidak ikut di-mute (dan tidak disimpan sebagai audio)', () => {
+    const pc = new FakeRTCPeerConnection();
+    const wire = makeManager(sessionA.sessionId, pc);
+    wire.manager.addPeer(sessionB, true);
+
+    const videoTrack = {
+      kind: 'video',
+      id: 'remote-cam',
+      enabled: true,
+    } as unknown as MediaStreamTrack;
+    pc.fire('track', { track: videoTrack, streams: [] });
+    wire.manager.setPeerMuted(sessionB.sessionId, true);
+
+    expect((videoTrack as { enabled: boolean }).enabled).toBe(true); // bukan urusan muting audio
+  });
+
+  it('getInboundDropCounts membaca counter DataChannelSync per peer (hardening 25-c)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const pc = new FakeRTCPeerConnection();
+      const wire = makeManager(sessionA.sessionId, pc);
+      wire.manager.addPeer(sessionB, true);
+
+      const dc = new FakeRTCDataChannel('position');
+      pc.fire('datachannel', { channel: dc });
+      dc.deliver('x'.repeat(99_999)); // > 16384 default → drop oversize
+
+      expect(wire.manager.getInboundDropCounts(sessionB.sessionId)).toEqual({
+        oversize: 1,
+        overrate: 0,
+      });
+      // Label warn memuat sessionId peer (pola trail).
+      expect(String(warnSpy.mock.calls[0])).toContain(sessionB.sessionId);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});

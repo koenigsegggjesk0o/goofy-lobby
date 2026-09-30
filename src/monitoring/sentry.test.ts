@@ -134,6 +134,120 @@ describe('initMonitoring', () => {
   });
 });
 
+describe('beforeSend deep-scrub (remediasi 25-a)', () => {
+  /** init sekali per test (fake baru tiap test) → ambil beforeSend-nya. */
+  function getBeforeSend(): (e: unknown) => unknown {
+    initMonitoring(DSN);
+    return (fake.initCalls[0] as { beforeSend: (e: unknown) => unknown }).beforeSend;
+  }
+
+  it('extra nested 3 level: kunci sensitif di semua kedalaman difilter', () => {
+    const beforeSend = getBeforeSend();
+    const scrubbed = beforeSend({
+      extra: {
+        room: 'abc123',
+        layer1: {
+          session: 'jwt-abc',
+          layer2: {
+            api_key: 'nested',
+            layer3: { password: 'jauh', keep: 'utuh' },
+          },
+        },
+      },
+    }) as { extra: Record<string, unknown> };
+    expect(scrubbed.extra.room).toBe('abc123');
+    const layer1 = scrubbed.extra.layer1 as Record<string, unknown>;
+    expect(layer1.session).toBe('[difilter]');
+    const layer2 = layer1.layer2 as Record<string, unknown>;
+    expect(layer2.api_key).toBe('[difilter]');
+    const layer3 = layer2.layer3 as Record<string, unknown>;
+    expect(layer3.password).toBe('[difilter]');
+    expect(layer3.keep).toBe('utuh');
+  });
+
+  it('breadcrumbs[i].data nested: kunci sensitif disikat, field lain utuh', () => {
+    const beforeSend = getBeforeSend();
+    const scrubbed = beforeSend({
+      breadcrumbs: [
+        { message: 'join room', category: 'mesh', level: 'info', data: { cand: { secret: 'x' } } },
+        { message: 'tanpa data' },
+        { message: 'data array', data: [{ api_key: 'y' }, 'plain'] },
+      ],
+    }) as { breadcrumbs: Array<{ message: string; data?: unknown }> };
+    const first = scrubbed.breadcrumbs[0];
+    expect(first?.message).toBe('join room');
+    const data = first?.data as { cand: { secret: unknown } };
+    expect(data.cand.secret).toBe('[difilter]');
+    expect(scrubbed.breadcrumbs[1]).toEqual({ message: 'tanpa data' });
+    expect(scrubbed.breadcrumbs[2]?.data).toEqual([{ api_key: '[difilter]' }, 'plain']);
+  });
+
+  it('contexts nested: context terdalam dibersihkan', () => {
+    const beforeSend = getBeforeSend();
+    const scrubbed = beforeSend({
+      contexts: {
+        'voice-recorder': { state: 'recording', meta: { credential: 'abc', durasi: 12 } },
+      },
+    }) as { contexts: Record<string, unknown> };
+    const ctx = scrubbed.contexts['voice-recorder'] as Record<string, unknown>;
+    expect(ctx.state).toBe('recording');
+    expect((ctx.meta as Record<string, unknown>).credential).toBe('[difilter]');
+    expect((ctx.meta as Record<string, unknown>).durasi).toBe(12);
+  });
+
+  it('string > 2048 char dipotong + sufiks [truncated] (setelah redaksi)', () => {
+    const beforeSend = getBeforeSend();
+    const secretTail = 'rahasia'.repeat(10);
+    const scrubbed = beforeSend({
+      extra: { blob: `x`.repeat(3000) + `?token=${secretTail}` },
+    }) as { extra: Record<string, unknown> };
+    const blob = scrubbed.extra.blob as string;
+    expect(blob.length).toBe(2048 + '…[truncated]'.length);
+    expect(blob.endsWith('…[truncated]')).toBe(true);
+    expect(blob).not.toContain(secretTail);
+  });
+
+  it('URL userinfo (user:pass@) di nilai string di-redaksi, host tetap terlihat', () => {
+    const beforeSend = getBeforeSend();
+    const scrubbed = beforeSend({
+      extra: { turn: 'turn://user:rahasia@turn.example.com:3478?transport=tcp' },
+      contexts: { net: { url: 'https://alice:s3cret@relay.example.com/path' } },
+    }) as { extra: Record<string, unknown>; contexts: Record<string, unknown> };
+    expect(scrubbed.extra.turn).toBe('turn://***:***@turn.example.com:3478?transport=tcp');
+    expect(scrubbed.contexts.net).toEqual({ url: 'https://***:***@relay.example.com/path' });
+  });
+
+  it('query param sensitif dalam string di-redaksi, param lain tetap', () => {
+    const beforeSend = getBeforeSend();
+    const scrubbed = beforeSend({
+      extra: { link: 'https://x.example.com/a?token=abc&room=abc123&api_key=zzz' },
+    }) as { extra: Record<string, unknown> };
+    expect(scrubbed.extra.link).toBe(
+      'https://x.example.com/a?token=[difilter]&room=abc123&api_key=[difilter]',
+    );
+  });
+
+  it('nilai sirkular tidak meledak — ditandai [circular]', () => {
+    const beforeSend = getBeforeSend();
+    const nested: Record<string, unknown> = { keep: 'ok' };
+    nested.self = nested;
+    const scrubbed = beforeSend({
+      extra: { nested },
+    }) as { extra: Record<string, unknown> };
+    const out = scrubbed.extra.nested as Record<string, unknown>;
+    expect(out.keep).toBe('ok');
+    expect(out.self).toBe('[circular]');
+  });
+
+  it('request.url dengan userinfo: query dibuang DAN userinfo di-redaksi', () => {
+    const beforeSend = getBeforeSend();
+    const scrubbed = beforeSend({
+      request: { url: 'https://user:pass@app.example.com/room?token=rahasia' },
+    }) as { request: { url: string } };
+    expect(scrubbed.request.url).toBe('https://***:***@app.example.com/room');
+  });
+});
+
 describe('captureError', () => {
   it('tanpa detail → captureException langsung + event id', () => {
     const error = new Error('uji');

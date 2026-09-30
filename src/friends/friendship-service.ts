@@ -1,8 +1,10 @@
 import {
   BLOCK_GUARD_MESSAGE,
   FRIENDSHIP_PROFILE_COLUMNS,
+  FRIENDSHIP_RATE_LIMIT_MESSAGE,
   FRIENDSHIP_STATUS_ACCEPTED,
   FRIENDSHIP_STATUS_PENDING,
+  FRIENDSHIP_TRANSITION_GUARD_MESSAGE,
   FRIENDSHIPS_TABLE,
   FRIENDS_LIST_MAX,
   FriendshipProfileSummarySchema,
@@ -55,8 +57,9 @@ export class FriendshipService {
    *   → 'already-friends'; pending → 'request-exists' dengan arah pada
    *   pesan (incoming/outgoing) supaya UI bisa mengarahkan ke daftar yang
    *   tepat.
-   * - Error insert dipetakan: trigger block guard → 'blocked', unique
-   *     index kanonik (balapan) → 'request-exists', CHECK no_self →
+   * - Error insert dipetakan: trigger block guard (DUA ARAH sejak 0019)
+   *     → 'blocked', rate limit server (trigger 0019) → 'rate-limited',
+   *     unique index kanonik (balapan) → 'request-exists', CHECK no_self →
    *     'self-request'.
    */
   async sendFriendRequest(requesterId: string, addresseeId: string): Promise<Friendship> {
@@ -129,6 +132,16 @@ export class FriendshipService {
       .select('*')
       .single();
     if (response.error !== null) {
+      // Trigger transition guard 0019 (downgrade accepted→pending ditolak
+      // di lapisan data) — dibedakan dari not-found supaya pemanggil tidak
+      // mengira barisnya hilang; pesan mentah server tidak diteruskan.
+      if (response.error.message.includes(FRIENDSHIP_TRANSITION_GUARD_MESSAGE)) {
+        throw new FriendsError(
+          'invalid-transition',
+          'transisi status pertemanan ditolak server: pertemanan yang sudah diterima tidak bisa kembali menjadi permintaan (trigger 0019)',
+          response.error,
+        );
+      }
       throw new FriendsError(
         'not-found',
         `permintaan tidak ditemukan / bukan milikmu / bukan pending: ${response.error.message}`,
@@ -341,15 +354,30 @@ function otherPartyOf(row: Friendship, user: string): string {
 
 /**
  * Memetakan error insert PostgREST → FriendsError ber-kode:
- * - pesan memuat BLOCK_GUARD_MESSAGE (trigger 0007, P0001) → 'blocked';
+ * - pesan memuat FRIENDSHIP_RATE_LIMIT_MESSAGE (trigger 0019, P0001)
+ *   → 'rate-limited' (batas server 10 request/jam; pesan mentah tidak
+ *   diteruskan ke pemanggil);
+ * - pesan memuat BLOCK_GUARD_MESSAGE (trigger 0007, dua arah sejak 0019,
+ *   P0001) → 'blocked';
  * - code '23505' (unique index kanonik — balapan yang lolos pra-cek)
  *   → 'request-exists';
  * - code '23514' (CHECK friendships_no_self — jalur defensif, biasanya
  *   sudah ditolak lokal) → 'self-request'.
  */
 function mapFriendshipInsertError(error: SupabaseErrorLike): FriendsError {
+  if (error.message.includes(FRIENDSHIP_RATE_LIMIT_MESSAGE)) {
+    return new FriendsError(
+      'rate-limited',
+      'terlalu banyak permintaan pertemanan terkirim dalam 1 jam terakhir (batas server 10/jam, trigger 0019) — coba lagi nanti',
+      error,
+    );
+  }
   if (error.message.includes(BLOCK_GUARD_MESSAGE)) {
-    return new FriendsError('blocked', 'permintaan ditolak: penerima telah memblokir kamu', error);
+    return new FriendsError(
+      'blocked',
+      'permintaan ditolak: ada blokir antara kamu dan penerima — arah mana pun (guard dua arah sejak 0019)',
+      error,
+    );
   }
   if (error.code === '23505') {
     return new FriendsError(

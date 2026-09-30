@@ -26,6 +26,7 @@ function recordEvents(controller: MeshRoomController): RecordedEvents {
     'invalid-signal': [],
     'invalid-position': [],
     'room-full': [],
+    'peer-muted': [],
     'selected-pair': [],
     error: [],
   } as RecordedEvents;
@@ -41,7 +42,11 @@ function makePeerSession(sessionId: string): SessionInfo {
   return makeSession({ sessionId });
 }
 
-function setup(roomCode = 'X8BBY001', selfId = 'aaaa-self-0001') {
+function setup(
+  roomCode = 'X8BBY001',
+  selfId = 'aaaa-self-0001',
+  extra: { blockListProvider?: () => Promise<Set<string>> } = {},
+) {
   const fakeSupabase = new FakeSupabase();
   const self = makeSession({ sessionId: selfId, displayName: 'Diri Sendiri' });
   const pcs: FakeRTCPeerConnection[] = [];
@@ -54,6 +59,9 @@ function setup(roomCode = 'X8BBY001', selfId = 'aaaa-self-0001') {
       pcs.push(pc);
       return asPeerConnection(pc);
     },
+    ...(extra.blockListProvider !== undefined
+      ? { blockListProvider: extra.blockListProvider }
+      : {}),
   });
   const events = recordEvents(controller);
   const channel = (): FakeRealtimeChannel => {
@@ -641,5 +649,232 @@ describe('MeshRoomController — pasangan terpilih (selected pair)', () => {
     expect(rejoined?.selectedPair).toBeNull();
 
     await controller.leave();
+  });
+});
+
+// ============================================================
+// From-roster check (remediasi audit 25-c — spoofing insider LOW)
+// ============================================================
+
+describe('MeshRoomController — from-roster check (25-c)', () => {
+  function offerFrom(from: string): Record<string, unknown> {
+    return { v: 1, type: 'offer', from, to: 'aaaa-self-0001', sdp: 'v=0\r\nfake-offer' };
+  }
+
+  it('pesan dari `from` tak dikenal → tidak pernah membuat peer (di antrekan, bukan diproses)', async () => {
+    const { controller, pcs, pc, channel } = setup();
+    await controller.join();
+
+    channel().deliverSignal(offerFrom('asing-session-9999'));
+    await flush();
+    await flush();
+
+    expect(pcs).toHaveLength(0);
+    expect(controller.getPeers()).toHaveLength(0);
+    // Tidak ada peer connection → remoteDescription tidak pernah tersentuh.
+    expect(() => pc(0)).toThrow(/belum ada/);
+  });
+
+  it('race presence-ADD tetap aman: sinyal terantre di-flush saat peer muncul di presence', async () => {
+    const { controller, pcs, pc, channel } = setup();
+    await controller.join();
+    const peer = makePeerSession('zzzz-peer-0002');
+
+    // Offer tiba SEBELUM presence kita menyimpan peer (race e2e F1.6 yang
+    // terdokumentasi) — pesan PERTAMA dari pengirim baru diantrekan.
+    channel().deliverSignal(offerFrom(peer.sessionId));
+    await flush();
+    expect(pcs).toHaveLength(0); // belum ada peer — hanya antrean
+
+    // Presence sync tiba (~1-2 s kemudian di dunia nyata) → peer didaftarkan
+    // + antrean di-flush → offer diproses.
+    channel().simulatePresence(peer);
+    await flush();
+
+    expect(pcs).toHaveLength(1);
+    expect(pc(0).remoteDescription?.type).toBe('offer');
+  });
+
+  it('serangan: buffer pengirim tak dikenal penuh → pesan berikut DI-DROP + trail invalid-signal', async () => {
+    const { controller, events, pcs, channel } = setup();
+    await controller.join();
+
+    // 16 pengirim fiktif mengisi seluruh buffer pending (PENDING_UNKNOWN_SENDER_MAX).
+    for (let index = 0; index < 16; index += 1) {
+      channel().deliverSignal(offerFrom(`fiktif-${String(index).padStart(2, '0')}-session`));
+    }
+    await flush();
+    expect(pcs).toHaveLength(0);
+    expect(events['invalid-signal']).toHaveLength(0); // dalam anggaran — tanpa trail
+
+    // Pengirim tak dikenal ke-17 → DROP + trail (from-roster check).
+    channel().deliverSignal(offerFrom('fiktif-99-session'));
+    await flush();
+
+    expect(events['invalid-signal']).toHaveLength(1);
+    expect(events['invalid-signal'][0]?.reason).toContain('from-roster check');
+    expect(events['invalid-signal'][0]?.reason).toContain('fiktif-99-session');
+    expect(pcs).toHaveLength(0); // peer tidak dibuat
+    expect(controller.getPeers()).toHaveLength(0);
+  });
+
+  it('pengirim yang pernah terlihat di presence tidak ikut ter-drop (blip presence)', async () => {
+    const { controller, events, channel } = setup();
+    await controller.join();
+    const peer = makePeerSession('zzzz-peer-0002');
+
+    // Peer pernah hadir lalu pergi (blip) — sessionId tetap "pernah terlihat".
+    channel().simulatePresence(peer);
+    expect(controller.getPeers()).toHaveLength(1);
+    channel().removePresence(peer.sessionId);
+    expect(controller.getPeers()).toHaveLength(0);
+
+    // Buffer dipenuhi 16 pengirim tak dikenal.
+    for (let index = 0; index < 16; index += 1) {
+      channel().deliverSignal(offerFrom(`fiktif-${String(index).padStart(2, '0')}-session`));
+    }
+
+    // Sinyal dari peer yang pernah terlihat → TETAP diantrekan (bukan drop).
+    channel().deliverSignal(offerFrom(peer.sessionId));
+    await flush();
+
+    const rosterDrops = events['invalid-signal'].filter((entry) =>
+      entry.reason.includes('from-roster check'),
+    );
+    expect(rosterDrops).toHaveLength(0);
+    expect(controller.getPeers()).toHaveLength(0); // diantrekan, bukan diproses — peer sudah pergi
+
+    // Peer kembali hadir → antreannya di-flush.
+    channel().simulatePresence(peer);
+    await flush();
+    expect(controller.getPeers()).toHaveLength(1);
+  });
+});
+
+// ============================================================
+// Block-muting mesh (remediasi audit 25-c M4)
+// ============================================================
+
+describe('MeshRoomController — block-muting (25-c M4)', () => {
+  it('peer milik user terblokir → mute dua arah + event peer-muted (trail)', async () => {
+    const blocked = new Set<string>();
+    const { controller, events, pcs, channel } = setup('X8BBY001', 'aaaa-self-0001', {
+      blockListProvider: () => Promise.resolve(new Set(blocked)),
+    });
+    await controller.join();
+
+    const peer = makePeerSession('zzzz-peer-0002');
+    blocked.add(peer.userId); // blokir user pemilik sesi peer
+    await controller.refreshBlockedPeers(); // daftar termuat sebelum peer masuk
+
+    channel().simulatePresence(peer); // roster ADD
+    await flush();
+
+    expect(controller.isPeerMuted(peer.sessionId)).toBe(true);
+    expect(events['peer-muted']).toEqual([{ sessionId: peer.sessionId, muted: true }]);
+    // Mute diterapkan pada peer connection: sender audio kita di-null-kan.
+    const stream = { getTracks: () => [{ kind: 'audio', id: 'mic-1' }] } as unknown as MediaStream;
+    controller.attachLocalStream(stream);
+    await flush();
+    expect(pcs[0]?.senders).toHaveLength(0); // attach saat muted sengaja dilewati
+    expect(events['peer-muted']).toHaveLength(1); // tanpa derau tambahan
+  });
+
+  it('join saat fetch masih berjalan → applyBlockList menutup peer yang terlanjur terhubung', async () => {
+    let releaseFetch: ((ids: Set<string>) => void) | undefined;
+    const { controller, events, channel } = setup('X8BBY001', 'aaaa-self-0001', {
+      blockListProvider: () =>
+        new Promise<Set<string>>((resolve) => {
+          releaseFetch = (ids) => resolve(ids);
+        }),
+    });
+    await controller.join();
+
+    const peer = makePeerSession('zzzz-peer-0002');
+    channel().simulatePresence(peer); // fetch belum selesai — peer belum muted
+    expect(controller.isPeerMuted(peer.sessionId)).toBe(false);
+
+    releaseFetch?.(new Set([peer.userId])); // fetch selesai belakangan
+    await flush();
+
+    expect(controller.isPeerMuted(peer.sessionId)).toBe(true);
+    expect(events['peer-muted']).toEqual([{ sessionId: peer.sessionId, muted: true }]);
+  });
+
+  it('refreshBlockedPeers: unblock → peer di-unmute + event', async () => {
+    const peer = makePeerSession('zzzz-peer-0002');
+    let blocked = new Set([peer.userId]);
+    const { controller, events, channel } = setup('X8BBY001', 'aaaa-self-0001', {
+      blockListProvider: () => Promise.resolve(new Set(blocked)),
+    });
+    await controller.join();
+    await controller.refreshBlockedPeers();
+    channel().simulatePresence(peer);
+    expect(controller.isPeerMuted(peer.sessionId)).toBe(true);
+
+    blocked = new Set(); // user membuka blokir
+    await controller.refreshBlockedPeers();
+
+    expect(controller.isPeerMuted(peer.sessionId)).toBe(false);
+    expect(events['peer-muted']).toEqual([
+      { sessionId: peer.sessionId, muted: true },
+      { sessionId: peer.sessionId, muted: false },
+    ]);
+  });
+
+  it('provider melempar → fail-open: daftar dianggap kosong + log, join tidak terganggu', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const { controller, events, channel } = setup('X8BBY001', 'aaaa-self-0001', {
+        blockListProvider: () => Promise.reject(new Error('db mati')),
+      });
+      await expect(controller.join()).resolves.toBeUndefined();
+
+      const peer = makePeerSession('zzzz-peer-0002');
+      channel().simulatePresence(peer);
+      await controller.refreshBlockedPeers();
+      await flush();
+
+      expect(controller.isPeerMuted(peer.sessionId)).toBe(false);
+      expect(events['peer-muted']).toHaveLength(0);
+      // Dua fetch gagal: otomatis saat join + refresh manual — keduanya
+      // fail-open dengan log.
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+      expect(String(warnSpy.mock.calls[0])).toContain('fail-open');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('tanpa provider (fake test tanpa .from/.auth) → fitur mati: tidak ada fetch/event', async () => {
+    const { controller, events, channel } = setup(); // FakeSupabase — tanpa kemampuan query
+    await controller.join();
+
+    const peer = makePeerSession('zzzz-peer-0002');
+    channel().simulatePresence(peer);
+    await controller.refreshBlockedPeers();
+    await flush();
+
+    expect(controller.isPeerMuted(peer.sessionId)).toBe(false);
+    expect(events['peer-muted']).toHaveLength(0);
+  });
+
+  it('leave di sela fetch → hasil tidak diterapkan ke peer yang sudah dibuang', async () => {
+    let releaseFetch: ((ids: Set<string>) => void) | undefined;
+    const { controller, channel } = setup('X8BBY001', 'aaaa-self-0001', {
+      blockListProvider: () =>
+        new Promise<Set<string>>((resolve) => {
+          releaseFetch = (ids) => resolve(ids);
+        }),
+    });
+    await controller.join();
+    const peer = makePeerSession('zzzz-peer-0002');
+    channel().simulatePresence(peer);
+
+    await controller.leave(); // peer dibuang saat fetch masih berjalan
+    releaseFetch?.(new Set([peer.userId]));
+    await flush();
+
+    expect(controller.getPeers()).toHaveLength(0); // tidak ada kebangkitan peer
   });
 });

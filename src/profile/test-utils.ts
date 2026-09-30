@@ -128,7 +128,11 @@ export class FakeStorageBucket implements StorageBucketLike {
   }> = [];
   readonly signedUrlCalls: Array<{ path: string; expiresIn: number }> = [];
   readonly removeCalls: string[][] = [];
-  readonly listCalls: Array<string | undefined> = [];
+  /** Setiap panggilan list: prefix + opsi paginasi (utk asersi kuota). */
+  readonly listCalls: Array<{
+    folder?: string;
+    options?: { limit?: number; offset?: number };
+  }> = [];
   failUploadWith?: { message: string };
   failSignedUrlWith?: { message: string };
   failRemoveWith?: { message: string };
@@ -196,20 +200,44 @@ export class FakeStorageBucket implements StorageBucketLike {
     return { data: paths, error: null };
   }
 
+  /**
+   * Meniru storage list Supabase: prefix mentah (folder dianggap prefix
+   * `${uid}/`), paginasi limit/offset (default 100 — persis API asli),
+   * urutan nama stabil (nama asc), dan entri membawa metadata.size
+   * (persis kebutuhan penghitung kuota).
+   */
   async list(
     folder?: string,
+    options?: { limit?: number; offset?: number },
   ): Promise<
-    { data: Array<{ name: string }>; error: null } | { data: null; error: { message: string } }
+    | {
+        data: Array<{ name: string; metadata: { size: number; contentType: string } | null }>;
+        error: null;
+      }
+    | { data: null; error: { message: string } }
   > {
-    this.listCalls.push(folder);
+    this.listCalls.push({
+      folder,
+      options: options === undefined ? undefined : { ...options },
+    });
     if (this.failListWith !== undefined) {
       return { data: null, error: this.failListWith };
     }
-    const prefix = folder === undefined ? '' : `${folder}/`;
+    const prefix = folder ?? '';
     const names = [...this.objects.keys()]
       .filter((path) => path.startsWith(prefix))
-      .map((path) => path.slice(prefix.length));
-    return { data: names.map((name) => ({ name })), error: null };
+      .map((path) => path.slice(prefix.length))
+      .sort();
+    const limit = options?.limit ?? 100;
+    const offset = options?.offset ?? 0;
+    const page = names.slice(offset, offset + limit);
+    return {
+      data: page.map((name) => {
+        const metadata = this.objects.get(`${prefix}${name}`) ?? null;
+        return { name, metadata };
+      }),
+      error: null,
+    };
   }
 }
 

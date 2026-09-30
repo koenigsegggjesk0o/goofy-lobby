@@ -2,8 +2,11 @@ import {
   ALLOWED_CUSTOM_SOUND_MIMES,
   CUSTOM_SOUND_EXTENSION_BY_MIME,
   MAX_CUSTOM_SOUND_BYTES,
+  MAX_CUSTOM_SOUND_FILES,
+  MAX_CUSTOM_SOUND_TOTAL_BYTES,
   SIGNED_URL_DEFAULT_EXPIRY_S,
   SOUNDBOARD_BUCKET_NAME,
+  STORAGE_LIST_PAGE_SIZE,
   SoundboardError,
   assertCustomSoundPath,
   isAllowedCustomSoundMime,
@@ -61,8 +64,15 @@ export class CustomSoundService {
   /**
    * Mengunggah custom sound baru milik `userId`. Validasi lokal: userId
    * terisi, blob tidak kosong, ≤ 5 MiB, MIME PERSIS salah satu MIME bucket
-   * (varian codecs ditolak di sini, bukan di server). Mengembalikan
-   * referensi path + fullPath + byte + MIME objek.
+   * (varian codecs ditolak di sini, bukan di server); KUOTA per-user
+   * (audit 25 M1): jumlah file & total byte folder `${userId}/` di bawah
+   * batas. Mengembalikan referensi path + fullPath + byte + MIME objek.
+   *
+   * Residual yang DITERIMA (terdokumentasi): TOCTOU — dua upload bersamaan
+   * dari tab/akun yang sama bisa lolos pengecekan kuota bersama-sama
+   * (overshoot kecil, dibatasi cap 5 MiB/file). Penegakan kuota
+   * server-side sejati membutuhkan mediasi Edge Function (hitung ulang di
+   * sisi service_role sebelum menulis) — dicatat sebagai utang Fase 3.
    */
   async uploadCustomSound(userId: string, blob: Blob): Promise<CustomSoundRef> {
     if (userId === '') {
@@ -82,6 +92,25 @@ export class CustomSoundService {
       throw new SoundboardError(
         'wrong-mime',
         `MIME blob "${mimeType}" bukan salah satu dari ${ALLOWED_MIMES_MESSAGE}`,
+      );
+    }
+    // Kuota per-user (audit 25 M1) — dihitung SEBELUM upload, dari
+    // metadata.size seluruh folder milik sendiri (paginated: storage list
+    // max 100 objek per panggilan).
+    const usage = await this.#currentUsage(userId);
+    if (usage.files >= MAX_CUSTOM_SOUND_FILES) {
+      throw new SoundboardError(
+        'quota_exceeded',
+        `kuota custom sound penuh: maksimum ${MAX_CUSTOM_SOUND_FILES} file per akun — ` +
+          `hapus sound lama terlebih dulu`,
+      );
+    }
+    if (usage.bytes + blob.size > MAX_CUSTOM_SOUND_TOTAL_BYTES) {
+      throw new SoundboardError(
+        'quota_exceeded',
+        `kuota penyimpanan custom sound penuh: total terpakai ${usage.bytes} byte + unggahan ` +
+          `${blob.size} byte melebihi batas ${MAX_CUSTOM_SOUND_TOTAL_BYTES} byte — ` +
+          `hapus sound lama terlebih dulu`,
       );
     }
     const ext = CUSTOM_SOUND_EXTENSION_BY_MIME[mimeType];
@@ -151,7 +180,7 @@ export class CustomSoundService {
     if (userId === '') {
       throw new SoundboardError('not-signed-in', 'userId kosong — belum signin?');
     }
-    const response = await this.#bucket().list(userId);
+    const response = await this.#bucket().list(`${userId}/`);
     if (response.error !== null) {
       throw new SoundboardError(
         'storage-error',
@@ -160,6 +189,40 @@ export class CustomSoundService {
       );
     }
     return response.data.map((entry) => entry.name);
+  }
+
+  /**
+   * Menghitung pemakaian folder `${userId}/` (jumlah file + total byte)
+   * dengan memaginasi storage list — API Supabase mengembalikan maksimum
+   * STORAGE_LIST_PAGE_SIZE objek per panggilan, jadi loop offset sampai
+   * halaman pendek. Entri tanpa metadata (folder) tidak dihitung.
+   */
+  async #currentUsage(userId: string): Promise<{ files: number; bytes: number }> {
+    const prefix = `${userId}/`;
+    let offset = 0;
+    let files = 0;
+    let bytes = 0;
+    for (;;) {
+      const response = await this.#bucket().list(prefix, {
+        limit: STORAGE_LIST_PAGE_SIZE,
+        offset,
+      });
+      if (response.error !== null) {
+        throw new SoundboardError(
+          'storage-error',
+          `list custom sound gagal: ${response.error.message}`,
+          response.error,
+        );
+      }
+      files += response.data.length;
+      for (const entry of response.data) {
+        bytes += entry.metadata?.size ?? 0;
+      }
+      if (response.data.length < STORAGE_LIST_PAGE_SIZE) {
+        return { files, bytes };
+      }
+      offset += response.data.length;
+    }
   }
 }
 

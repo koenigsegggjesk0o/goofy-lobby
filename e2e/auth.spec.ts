@@ -8,6 +8,11 @@ import { qaUser } from './helpers/qa-env';
  * 400 captcha_failed — captcha Turnstile aktif di konfigurasi Auth.
  * Happy-path signin memakai QA users buatan admin (email sudah terkonfirmasi,
  * tanpa menyentuh rate limit email 2/jam).
+ *
+ * Catatan captcha (remediasi 25-a): secret Turnstile live di dashboard
+ * proyek ini adalah NYATA (bukan test key) — token dummy maupun absent
+ * DITOLAK captcha_failed (terbukti Task 22-e). Logika test tidak berubah;
+ * happy-path signin memakai token dummy via default harness.
  */
 
 const alpha = qaUser('alpha');
@@ -31,7 +36,9 @@ test('signup tanpa captcha token ditolak captcha_failed (DoD #4)', async ({ page
   expect(result.code).toBe('captcha_failed');
 });
 
-test('signin QA alpha happy path (captcha dummy test key)', async ({ page }) => {
+test('signin QA alpha happy path (token captcha dummy — secret live, bukan test key)', async ({
+  page,
+}) => {
   await page.goto('/test-harness/');
   await expect(page.locator('#harness-status')).toContainText('harness siap');
 

@@ -12,7 +12,15 @@
  * import.meta.env hanya disentuh sebagai argumen default adapter tipis
  * readTurnEnvFromVite / resolveIceServers — tidak ada akses env maupun efek
  * samping apa pun di top-level modul, jadi tetap tree-shakable.
+ *
+ * Tambahan remediasi 25-c (H2): resolveEphemeralTurn — kredensial TURN
+ * berumur pendek dari layanan Edge (supabase/functions/turn-credentials),
+ * dengan cache modul-level + fallback statis. Jalur statis parseTurnEnv
+ * TIDAK berubah perilaku. Wiring Fase 3 (bootstrap produk, lihat docstring
+ * resolveEphemeralTurn): env VITE_TURN_EPHEMERAL_URL + token sesi →
+ * iceServers ephemeral; null → resolveIceServers statis seperti hari ini.
  */
+import { z } from 'zod';
 import { DEFAULT_ICE_SERVERS } from './peer-connection-manager';
 
 /**
@@ -180,4 +188,159 @@ export function readTurnEnvFromVite(
   source: Record<string, string | undefined> = import.meta.env,
 ): TurnEnvResult {
   return parseTurnEnv(source);
+}
+
+// ============================================================
+// TURN ephemeral (remediasi audit 25-c H2 — kredensial berumur pendek)
+// ============================================================
+
+/**
+ * Skema respons layanan kredensial ephemeral (Edge Function
+ * supabase/functions/turn-credentials). `expiresAt` dalam MILLISECOND epoch
+ * agar langsung sebanding dengan Date.now().
+ */
+const EphemeralTurnResponseSchema = z.object({
+  urls: z.array(z.string().min(1)).min(1),
+  username: z.string().min(1).max(TURN_USERNAME_MAX_LENGTH),
+  credential: z.string().min(1),
+  expiresAt: z.number().finite().positive(),
+});
+
+/** Hasil tervalidasi yang di-cache per URL layanan. */
+interface EphemeralTurnCacheEntry {
+  url: string;
+  urls: string[];
+  username: string;
+  credential: string;
+  /** Millisecond epoch kedaluwarsa. */
+  expiresAt: number;
+}
+
+/** Margin pembaruan dini: refresh 60 s SEBELUM kedaluwarsa. */
+export const EPHEMERAL_TURN_RENEW_MARGIN_MS = 60_000;
+
+/**
+ * Cache modul-level — SATU entri per URL layanan (mesh hanya memakai satu
+ * layanan per sesi). Di-reset lewat clearEphemeralTurnCache() (test).
+ */
+let ephemeralTurnCache: EphemeralTurnCacheEntry | null = null;
+
+/** Menghapus cache kredensial ephemeral (dipakai test supaya deterministik). */
+export function clearEphemeralTurnCache(): void {
+  ephemeralTurnCache = null;
+}
+
+export interface ResolveEphemeralTurnArgs {
+  /** URL layanan kredensial (Edge Function) — env VITE_TURN_EPHEMERAL_URL. */
+  url: string;
+  /** Mendapatkan access token JWT untuk header Authorization Bearer. */
+  getAccessToken: () => Promise<string>;
+  /** fetch injeksi untuk test (default: fetch global). */
+  fetchImpl?: typeof fetch;
+  /** Jam injeksi untuk test (default: Date.now). */
+  now?: () => number;
+  /**
+   * Laporan kegagalan (trail) — default console.warn. Pemanggil bootstrap
+   * bisa menyambungkannya ke addTrail supaya masuk breadcrumb monitoring.
+   */
+  onInvalid?: (reason: string) => void;
+}
+
+/**
+ * Mengambil (dan men-cache) entri RTCIceServer TURN EPHEMERAL dari layanan
+ * kredensial — merespons temuan H2 audit 25-c: kredensial TURN statis di
+ * bundle klien bisa diekstrak siapa pun (walau tanpa akun) untuk membakar
+ * kuota relay; ephemeral memberi TTL pendek + memerlukan JWT sah.
+ *
+ * Perilaku:
+ * - GET url dengan header `Authorization: Bearer <token>` → validasi zod
+ *   {urls, username, credential, expiresAt} → entri {urls, username,
+ *   credential} siap dipakai sebagai RTCIceServer.
+ * - Cache modul-level: masih sehat (now ≤ expiresAt - 60 s) → langsung
+ *   dipakai tanpa fetch; lewat margin → fetch ulang.
+ * - Kegagalan APA PUN (fetch melempar, non-200, JSON rusak, skema gugur,
+ *   payload sudah kedaluwarsa) → log (onInvalid/console.warn) + null —
+ *   pemanggil diminta FALLBACK ke konfigurasi statis (parseTurnEnv).
+ *
+ * Modul ini MURNI ARGS: tidak membaca env/`import.meta.env` apa pun —
+ * pembacaan VITE_TURN_EPHEMERAL_URL + penyediaan token dilapisan bootstrap
+ * (harness produk / UI Fase 3):
+ *   1. bootstrap membaca VITE_TURN_EPHEMERAL_URL (jika kosong → jalur
+ *      statis lama, tanpa perubahan perilaku);
+ *   2. getAccessToken = () => supabase.auth.getSession()…access_token;
+ *   3. resolveIceServers statis dipakai sebagai fallback saat null;
+ *   4. opsi `onInvalid` disambungkan ke addTrail (pola monitoring).
+ */
+export async function resolveEphemeralTurn(
+  args: ResolveEphemeralTurnArgs,
+): Promise<RTCIceServer | null> {
+  const { url, getAccessToken } = args;
+  const fetchImpl = args.fetchImpl ?? fetch;
+  const now = args.now ?? Date.now;
+  const report = args.onInvalid ?? ((reason: string) => console.warn('[turn-ephemeral]', reason));
+
+  const cached = ephemeralTurnCache;
+  if (
+    cached !== null &&
+    cached.url === url &&
+    now() <= cached.expiresAt - EPHEMERAL_TURN_RENEW_MARGIN_MS
+  ) {
+    return { urls: cached.urls, username: cached.username, credential: cached.credential };
+  }
+
+  let token: string;
+  try {
+    token = await getAccessToken();
+  } catch (error) {
+    report(`gagal mendapatkan access token: ${String(error)}`);
+    return null;
+  }
+  if (token === '') {
+    report('access token kosong — belum signin?');
+    return null;
+  }
+
+  let response: Response;
+  try {
+    response = await fetchImpl(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch (error) {
+    report(`fetch gagal: ${String(error)}`);
+    return null;
+  }
+  if (!response.ok) {
+    report(`respons tidak ok: ${String(response.status)}`);
+    return null;
+  }
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch (error) {
+    report(`respons bukan JSON valid: ${String(error)}`);
+    return null;
+  }
+  const parsed = EphemeralTurnResponseSchema.safeParse(payload);
+  if (!parsed.success) {
+    report(
+      `payload gagal validasi: ${parsed.error.issues
+        .map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
+        .join('; ')}`,
+    );
+    return null;
+  }
+  const data = parsed.data;
+  if (data.expiresAt <= now()) {
+    report(`payload sudah kedaluwarsa saat diterima (expiresAt ${String(data.expiresAt)})`);
+    return null;
+  }
+  ephemeralTurnCache = {
+    url,
+    urls: [...data.urls],
+    username: data.username,
+    credential: data.credential,
+    expiresAt: data.expiresAt,
+  };
+  return { urls: [...data.urls], username: data.username, credential: data.credential };
 }

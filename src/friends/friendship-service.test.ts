@@ -134,6 +134,29 @@ describe('FriendshipService.sendFriendRequest', () => {
     expect(client.friendships).toHaveLength(0);
   });
 
+  it('pengirim memblokir penerima (arah sebaliknya) → blocked (guard dua arah 0019)', async () => {
+    // Sebelum 0019, request ini DITERIMA — blocker bisa mengirim request ke
+    // korban blokirnya (temuan INFO 25-b). Sekarang kedua arah menolak.
+    const blocks: BlockRow[] = [
+      { blocker_id: ALPHA, blocked_id: BRAVO, created_at: '2026-01-01T00:00:00.000Z' },
+    ];
+    const { client, service } = setup({ blocks });
+    await expect(service.sendFriendRequest(ALPHA, BRAVO)).rejects.toMatchObject({
+      code: 'blocked',
+      cause: { message: BLOCK_GUARD_MESSAGE, code: 'P0001' },
+    });
+    expect(client.friendships).toHaveLength(0);
+  });
+
+  it('rate limit server (trigger 0019, RATE_LIMITED_FRIENDSHIP) dipetakan rate-limited', async () => {
+    const dbError = { message: 'RATE_LIMITED_FRIENDSHIP', code: 'P0001' };
+    const { service } = setup({ failInsertWith: dbError });
+    await expect(service.sendFriendRequest(ALPHA, BRAVO)).rejects.toMatchObject({
+      code: 'rate-limited',
+      cause: dbError,
+    });
+  });
+
   it('balapan insert unik (code 23505) dipetakan request-exists', async () => {
     const { service } = setup({
       failInsertWith: {
@@ -226,6 +249,15 @@ describe('FriendshipService.acceptFriendRequest', () => {
     await expect(service.acceptFriendRequest(BRAVO, REQUEST_ID)).rejects.toMatchObject({
       code: 'not-found',
       cause: { message: 'RLS violation' },
+    });
+  });
+
+  it('error update INVALID_FRIENDSHIP_TRANSITION (trigger 0019) dipetakan invalid-transition, bukan not-found', async () => {
+    const dbError = { message: 'INVALID_FRIENDSHIP_TRANSITION', code: 'P0001' };
+    const { service } = setup({ failUpdateWith: dbError });
+    await expect(service.acceptFriendRequest(BRAVO, REQUEST_ID)).rejects.toMatchObject({
+      code: 'invalid-transition',
+      cause: dbError,
     });
   });
 });

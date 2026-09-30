@@ -29,6 +29,14 @@ export const MAX_CONVERSATION_LIMIT = 200;
  */
 export const DEFAULT_MESSAGE_RATE_LIMIT = { maxEvents: 10, windowMs: 30_000 } as const;
 
+/**
+ * Jeda aman coba ulang saat SERVER menolak pesan — trigger rate limit 0019
+ * (20 pesan / 10 detik per pengirim, exception 'RATE_LIMITED_MESSAGES').
+ * 10.000 ms adalah batas atas jendela server: di saat penolakan, pesan
+ * tertua dari 20 baris terakhir paling lama kedaluwarsa 10 detik lagi.
+ */
+export const SERVER_MESSAGE_RATE_LIMIT_RETRY_AFTER_MS = 10_000 as const;
+
 // ============================================================
 // Skema validasi (Zod)
 // ============================================================
@@ -106,7 +114,7 @@ export type ChatErrorCode =
   | 'invalid-body' // body gagal MessageBodySchema
   | 'invalid-cursor' // opts.before bukan timestamp ISO valid
   | 'self' // kirim/minta percakapan ke diri sendiri (cek lokal maupun DB 23514)
-  | 'rate-limited' // jendela geser pengirim habis (lihat retryAfterMs)
+  | 'rate-limited' // jendela geser pengirim habis — lokal (lihat retryAfterMs) maupun server (trigger 0019)
   | 'not-friends' // gate pertemanan: tidak ada friendship accepted antar keduanya
   | 'blocked' // trigger messages_block_guard menolak insert (P0001)
   | 'db-error' // kegagalan PostgREST lain

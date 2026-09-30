@@ -257,6 +257,17 @@ function formatMs(value) {
   return `${Math.round(value)}ms`;
 }
 
+/**
+ * Redaksi userinfo URL TURN pada OUTPUT (remediasi 25-a / 23-c LOW-2):
+ * `scheme://user:pass@host` → `scheme://***:***@host`. Nilai asli tetap
+ * dipakai untuk koneksi (RTCPeerConnection) — hanya cetakan yang disikat.
+ * Duplikasi kecil dengan test-harness/harness.ts disengaja (script CLI vs
+ * bundle harness tidak berbagi modul).
+ */
+function redactTurnUrl(value) {
+  return value.replace(/\/\/[^/@:\s]+:[^/@:\s]+@/g, '//***:***@');
+}
+
 /** Cetak distribusi dua baris: persentil dulu, lalu tendensi sentral + sebaran. */
 function printDistribution(label, s) {
   console.log(`${label}: n=${s.n}`);
@@ -304,7 +315,9 @@ async function main() {
     }
     if (turn.status === 'invalid') {
       console.log('TURN: invalid — konfigurasi tidak sah, verifikasi dibatalkan:');
-      for (const reason of turn.reasons) console.log(`  - ${reason}`);
+      // Alasan memuat URL mentah yang bisa berisi user:pass@ tertanam —
+      // di-redaksi di output (remediasi 25-a).
+      for (const reason of turn.reasons) console.log(`  - ${redactTurnUrl(reason)}`);
       process.exit(1);
     }
     if (TURN_TCP) {
@@ -324,8 +337,11 @@ async function main() {
           '❌ --turn-tcp: ada URL TURN yang kakinya UDP ke server — simulasi blokir-UDP jadi tidak sah:',
         );
         for (const url of udpUrls) {
+          // URL mentah bisa berisi user:pass@ — cetak versi ter-redaksi
+          // (saran perbaikan ikut memakai versi aman yang sama).
+          const safe = redactTurnUrl(url);
           console.log(
-            `  - ${url} → gunakan turns:${url.slice('turn:'.length)} atau tambahkan ?transport=tcp`,
+            `  - ${safe} → gunakan turns:${safe.slice('turn:'.length)} atau tambahkan ?transport=tcp`,
           );
         }
         process.exit(2);

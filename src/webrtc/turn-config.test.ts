@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_ICE_SERVERS, type PeerConnectionManagerOptions } from './peer-connection-manager';
 import {
+  EPHEMERAL_TURN_RENEW_MARGIN_MS,
   TURN_USERNAME_MAX_LENGTH,
+  clearEphemeralTurnCache,
   parseTurnEnv,
   readTurnEnvFromVite,
+  resolveEphemeralTurn,
   resolveIceServers,
 } from './turn-config';
 
@@ -263,5 +266,146 @@ describe('readTurnEnvFromVite / argumen default import.meta.env', () => {
     const resolved = resolveIceServers();
     expect(resolved.turnStatus).toBe('enabled');
     expect(resolved.iceServers).toEqual([...DEFAULT_ICE_SERVERS, expectedTurnEntry]);
+  });
+});
+
+// ============================================================
+// resolveEphemeralTurn (remediasi audit 25-c H2) — fetch + cache + fallback
+// ============================================================
+
+describe('resolveEphemeralTurn', () => {
+  /** Jam terkontrol (millisecond epoch) supaya tes cache deterministik. */
+  let fakeNow = 1_000_000_000_000;
+  const tick = (ms: number) => {
+    fakeNow += ms;
+  };
+
+  /** Payload ephemeral sah — expiresAt 1 jam dari fakeNow. */
+  const validPayload = () => ({
+    urls: [TURN_URL],
+    username: DUMMY_USERNAME,
+    credential: DUMMY_CREDENTIAL,
+    expiresAt: fakeNow + 3_600_000,
+  });
+
+  const jsonOk = (body: unknown) =>
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  const makeArgs = (fetchImpl: typeof fetch) => ({
+    url: 'https://edge.example/functions/v1/turn-credentials',
+    getAccessToken: async () => 'fake-jwt-token',
+    fetchImpl,
+    now: () => fakeNow,
+  });
+
+  afterEach(() => {
+    clearEphemeralTurnCache();
+    fakeNow = 1_000_000_000_000;
+    vi.restoreAllMocks();
+  });
+
+  it('payload sah → entri RTCIceServer + header Authorization Bearer terpasang', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      void input; // posisi pertama tanda tangan fetch; tidak dibaca test ini
+      expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer fake-jwt-token');
+      return jsonOk(validPayload());
+    }) as unknown as typeof fetch;
+    const entry = await resolveEphemeralTurn(makeArgs(fetchImpl));
+    expect(entry).toEqual({
+      urls: [TURN_URL],
+      username: DUMMY_USERNAME,
+      credential: DUMMY_CREDENTIAL,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('cache sehat → fetch TIDAK dipanggil ulang; lewat margin → refresh', async () => {
+    const fetchImpl = vi.fn(async () => jsonOk(validPayload())) as unknown as typeof fetch;
+    const args = makeArgs(fetchImpl);
+    await resolveEphemeralTurn(args);
+    await resolveEphemeralTurn(args);
+    expect(fetchImpl).toHaveBeenCalledTimes(1); // masih jauh dari kedaluwarsa
+    // Maju hingga LEBIH dari (expiresAt - 60s margin) → wajib fetch ulang.
+    tick(3_600_000 - EPHEMERAL_TURN_RENEW_MARGIN_MS + 1);
+    await resolveEphemeralTurn(args);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('cache tidak dipakai lintas URL layanan berbeda', async () => {
+    const fetchImpl = vi.fn(async () => jsonOk(validPayload())) as unknown as typeof fetch;
+    const args = makeArgs(fetchImpl);
+    await resolveEphemeralTurn(args);
+    const other = { ...args, url: 'https://other.example/fn' };
+    await resolveEphemeralTurn(other);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('non-200 → null (fallback statis di pemanggil)', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response('nope', { status: 503 }),
+    ) as unknown as typeof fetch;
+    await expect(resolveEphemeralTurn(makeArgs(fetchImpl))).resolves.toBeNull();
+  });
+
+  it('fetch melempar → null; getAccessToken melempar → null; token kosong → null', async () => {
+    const throwing = vi.fn(async () => {
+      throw new Error('network down');
+    }) as unknown as typeof fetch;
+    await expect(resolveEphemeralTurn(makeArgs(throwing))).resolves.toBeNull();
+    await expect(
+      resolveEphemeralTurn({
+        ...makeArgs(vi.fn() as unknown as typeof fetch),
+        getAccessToken: async () => {
+          throw new Error('no session');
+        },
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      resolveEphemeralTurn({
+        ...makeArgs(vi.fn() as unknown as typeof fetch),
+        getAccessToken: async () => '',
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it('payload rusak / skema gugur / sudah kedaluwarsa → null + onInvalid terpanggil', async () => {
+    const reasons: string[] = [];
+    const report = (reason: string) => reasons.push(reason);
+    const notJson = vi.fn(
+      async () => new Response('<html>', { status: 200 }),
+    ) as unknown as typeof fetch;
+    await expect(
+      resolveEphemeralTurn({ ...makeArgs(notJson), onInvalid: report }),
+    ).resolves.toBeNull();
+    const badSchema = vi.fn(async () =>
+      jsonOk({ urls: [], username: '', credential: 'x', expiresAt: 1 }),
+    ) as unknown as typeof fetch;
+    await expect(
+      resolveEphemeralTurn({ ...makeArgs(badSchema), onInvalid: report }),
+    ).resolves.toBeNull();
+    const stale = vi.fn(async () =>
+      jsonOk({ ...validPayload(), expiresAt: fakeNow - 1 }),
+    ) as unknown as typeof fetch;
+    await expect(
+      resolveEphemeralTurn({ ...makeArgs(stale), onInvalid: report }),
+    ).resolves.toBeNull();
+    expect(reasons).toHaveLength(3);
+    expect(reasons.every((r) => r.length > 0)).toBe(true);
+  });
+
+  it('kegagalan TIDAK menular ke cache — pemanggilan berikutnya tetap mencoba fetch', async () => {
+    let fail = true;
+    const fetchImpl = vi.fn(async () =>
+      fail ? new Response('err', { status: 500 }) : jsonOk(validPayload()),
+    ) as unknown as typeof fetch;
+    await expect(resolveEphemeralTurn(makeArgs(fetchImpl))).resolves.toBeNull();
+    fail = false;
+    await expect(resolveEphemeralTurn(makeArgs(fetchImpl))).resolves.toMatchObject({
+      username: DUMMY_USERNAME,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 });

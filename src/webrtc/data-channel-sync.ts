@@ -5,6 +5,15 @@ import {
   type Position,
 } from './types';
 
+/** Batas ukuran pesan inbound (karakter) — default remediasi 25-c (LOW/INFO). */
+export const INBOUND_MAX_MESSAGE_CHARS = 16_384;
+
+/** Batas laju pesan inbound per peer (pesan/detik, sliding window 1 s). */
+export const INBOUND_RATE_LIMIT_PER_SECOND = 100;
+
+/** Lebar jendela sliding-window throttle inbound (ms). */
+const INBOUND_RATE_WINDOW_MS = 1_000;
+
 export interface DataChannelSyncOptions {
   /** Dipanggil untuk setiap payload posisi valid dari remote peer. */
   onPosition: (position: Position) => void;
@@ -14,6 +23,29 @@ export interface DataChannelSyncOptions {
   maxBufferedAmount?: number;
   /** Jam injeksi untuk test. */
   now?: () => number;
+  /**
+   * Batas ukuran pesan inbound dalam KARAKTER (default
+   * INBOUND_MAX_MESSAGE_CHARS). Pesan yang melebihi di-DROP + counter —
+   * payload posisi sah selalu < 100 karakter, jadi 16 KiB sangat longgar.
+   * Di-inject supaya test burst bisa memakai nilai berbeda.
+   */
+  maxInboundMessageChars?: number;
+  /**
+   * Batas laju pesan inbound per peer per detik (default
+   * INBOUND_RATE_LIMIT_PER_SECOND, sliding window 1 s). Kelebihan di-DROP
+   * + counter. Di-inject supaya test burst bisa memakai nilai tinggi.
+   */
+  inboundRateLimitPerSecond?: number;
+  /** Label peer untuk pesan warn sekali-per-peer (mis. sessionId remote). */
+  peerLabel?: string;
+}
+
+/** Counter pesan inbound yang di-drop (remediasi 25-c — untuk stats/trail). */
+export interface InboundDropCounts {
+  /** Pesan di-drop karena melebihi maxInboundMessageChars. */
+  oversize: number;
+  /** Pesan di-drop karena melebihi inboundRateLimitPerSecond. */
+  overrate: number;
 }
 
 /**
@@ -25,7 +57,13 @@ export interface DataChannelSyncOptions {
  * - hanya dikirim saat channel 'open'.
  *
  * Payload masuk selalu divalidasi Zod — yang gugur dilaporkan ke onInvalid,
- * tidak pernah diteruskan.
+ * tidak pernah diteruskan. Hardening inbound (remediasi audit 25-c LOW/INFO):
+ * - pesan > maxInboundMessageChars karakter di-DROP sebelum JSON.parse
+ *   (biaya parse tidak dibayar untuk payload sampah) + counter + warn
+ *   sekali per peer;
+ * - laju inbound di-throttle sliding-window per detik (default 100 pesan/s
+ *   — ~6,7x laju kirim sah 15 Hz) + counter. Kelebihan di-drop, bukan
+ *   di-antre: posisi basi tidak ada gunanya.
  */
 export class DataChannelSync {
   private readonly dc: RTCDataChannel;
@@ -34,6 +72,16 @@ export class DataChannelSync {
   private readonly intervalMs: number;
   private readonly maxBufferedAmount: number;
   private readonly now: () => number;
+  private readonly maxInboundMessageChars: number;
+  private readonly inboundRateLimitPerSecond: number;
+  private readonly peerLabel: string;
+  /** Counter drop inbound — dibaca lewat getInboundDropCounts(). */
+  private readonly inboundDrops: InboundDropCounts = { oversize: 0, overrate: 0 };
+  /** Timestamp pesan inbound yang masuk jendela 1 s (sliding window). */
+  private readonly inboundWindow: number[] = [];
+  /** Warn per-jenis hanya sekali per peer (hindari spam console saat flood). */
+  private warnedOversize = false;
+  private warnedOverrate = false;
   private lastSentAt = Number.NEGATIVE_INFINITY;
   private closed = false;
 
@@ -44,6 +92,10 @@ export class DataChannelSync {
     this.intervalMs = options.sendIntervalMs ?? POSITION_SEND_INTERVAL_MS;
     this.maxBufferedAmount = options.maxBufferedAmount ?? POSITION_MAX_BUFFERED_AMOUNT;
     this.now = options.now ?? Date.now;
+    this.maxInboundMessageChars = options.maxInboundMessageChars ?? INBOUND_MAX_MESSAGE_CHARS;
+    this.inboundRateLimitPerSecond =
+      options.inboundRateLimitPerSecond ?? INBOUND_RATE_LIMIT_PER_SECOND;
+    this.peerLabel = options.peerLabel ?? 'peer-tak-dikenal';
     // Kontrak opsi numerik (konvensi stats.ts): nilai tak masuk akal
     // GAGAL KERAS saat konstruksi, bukan diam-diam mengubah perilaku
     // (interval NaN membuat throttle selalu lolos; batas negatif selalu
@@ -56,7 +108,22 @@ export class DataChannelSync {
         `maxBufferedAmount harus angka >= 0 (dapat: ${options.maxBufferedAmount})`,
       );
     }
+    if (!Number.isFinite(this.maxInboundMessageChars) || this.maxInboundMessageChars <= 0) {
+      throw new RangeError(
+        `maxInboundMessageChars harus angka > 0 (dapat: ${options.maxInboundMessageChars})`,
+      );
+    }
+    if (!Number.isFinite(this.inboundRateLimitPerSecond) || this.inboundRateLimitPerSecond <= 0) {
+      throw new RangeError(
+        `inboundRateLimitPerSecond harus angka > 0 (dapat: ${options.inboundRateLimitPerSecond})`,
+      );
+    }
     dc.addEventListener('message', this.handleMessage);
+  }
+
+  /** Snapshot counter drop inbound (untuk stats/trail pemanggil). */
+  getInboundDropCounts(): InboundDropCounts {
+    return { ...this.inboundDrops };
   }
 
   private readonly handleMessage = (event: MessageEvent<string>): void => {
@@ -65,6 +132,35 @@ export class DataChannelSync {
     }
     if (typeof event.data !== 'string') {
       this.onInvalid?.('payload bukan string');
+      return;
+    }
+    // Hardening 25-c (a): ukuran dulu — pesan raksasa di-drop SEBELUM parse
+    // (biaya JSON.parse tidak dibayar untuk payload sampah).
+    if (event.data.length > this.maxInboundMessageChars) {
+      this.inboundDrops.oversize += 1;
+      if (!this.warnedOversize) {
+        this.warnedOversize = true;
+        console.warn(
+          `[data-channel-sync] pesan inbound dari ${this.peerLabel} di-drop: ` +
+            `${event.data.length} karakter > batas ${this.maxInboundMessageChars} (selanjutnya diam, lihat counter)`,
+        );
+      }
+      this.onInvalid?.(
+        `payload terlalu besar: ${event.data.length} karakter (maksimum ${this.maxInboundMessageChars})`,
+      );
+      return;
+    }
+    // Hardening 25-c (b): sliding window 1 s — kelebihan laju di-drop.
+    if (!this.admitInboundRate()) {
+      this.inboundDrops.overrate += 1;
+      if (!this.warnedOverrate) {
+        this.warnedOverrate = true;
+        console.warn(
+          `[data-channel-sync] pesan inbound dari ${this.peerLabel} di-drop: ` +
+            `laju melebihi ${this.inboundRateLimitPerSecond}/detik (selanjutnya diam, lihat counter)`,
+        );
+      }
+      this.onInvalid?.(`laju pesan inbound melebihi batas ${this.inboundRateLimitPerSecond}/detik`);
       return;
     }
     let raw: unknown;
@@ -85,6 +181,28 @@ export class DataChannelSync {
       );
     }
   };
+
+  /**
+   * Sliding window 1 s: catat timestamp pesan ini bila kuota jendela masih
+   * tersisa, kembalikan false bila sudah penuh (pesan di-drop).
+   * `window.length` selalu ≤ inboundRateLimitPerSecond — memori terikat.
+   */
+  private admitInboundRate(): boolean {
+    const timestamp = this.now();
+    const cutoff = timestamp - INBOUND_RATE_WINDOW_MS;
+    while (this.inboundWindow.length > 0) {
+      const head = this.inboundWindow[0];
+      if (head === undefined || head > cutoff) {
+        break;
+      }
+      this.inboundWindow.shift();
+    }
+    if (this.inboundWindow.length >= this.inboundRateLimitPerSecond) {
+      return false;
+    }
+    this.inboundWindow.push(timestamp);
+    return true;
+  }
 
   /**
    * Mengirim posisi (best effort). Mengembalikan true bila benar-benar terkirim.

@@ -69,6 +69,28 @@ describe('getAppSupabase', () => {
     expect(typeof client.channel).toBe('function');
   });
 
+  it('auth terkonfigurasi flowType pkce + opsi lama tetap (remediasi 25-a)', async () => {
+    vi.stubEnv('VITE_SUPABASE_URL', 'https://unit-test.supabase.co');
+    vi.stubEnv('VITE_SUPABASE_ANON_KEY', 'anon-key-unit-test');
+    const { supabase } = await freshModules();
+
+    const client = supabase.getAppSupabase();
+    // Opsi auth di-protect oleh tipe SDK — dibaca runtime via satu cast
+    // terkontrol. Konfigurasi ini kontrak keamanan: PKCE wajib sebelum
+    // Fase 3 (default library 'implicit' berisiko token di URL), opsi
+    // persist/refresh/detect tidak boleh berubah oleh remediasi.
+    const auth = client.auth as unknown as {
+      flowType?: string;
+      persistSession?: boolean;
+      autoRefreshToken?: boolean;
+      detectSessionInUrl?: boolean;
+    };
+    expect(auth.flowType).toBe('pkce');
+    expect(auth.persistSession).toBe(true);
+    expect(auth.autoRefreshToken).toBe(true);
+    expect(auth.detectSessionInUrl).toBe(true);
+  });
+
   it('memoisasi: panggilan kedua instance SAMA (singleton)', async () => {
     vi.stubEnv('VITE_SUPABASE_URL', 'https://unit-test.supabase.co');
     vi.stubEnv('VITE_SUPABASE_ANON_KEY', 'anon-key-unit-test');

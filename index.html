@@ -80,8 +80,8 @@
         webhook + premium-status-service; skeleton Deno supabase/functions/paddle-webhook
       </li>
       <li>
-        db/migrations.test.ts — 13 migrasi dieksekusi di PostgreSQL asli (PGlite) + idempotensi +
-        matriks RLS + lockdown kolom is_premium
+        db/migrations.test.ts — 21 migrasi (0001–0021) dieksekusi di PostgreSQL asli (PGlite) +
+        idempotensi + matriks RLS + lockdown kolom is_premium
       </li>
     </ul>
     <p>
@@ -91,10 +91,11 @@
     </p>
     <p>
       CI GitHub Actions (F1.7, dibuat ulang Task 17): ci.yml (lint+typecheck+test+build) +
-      supabase-keepalive.yml (tiap 3 hari). Salinan kanonik terlacak di ci/workflows/ → dipulihkan
-      ke .github/workflows/ via scripts/dev/restore-ci.mjs (11 test); aktivasi di GitHub menunggu
-      scope Workflows pada PAT — keempat langkah CI terbukti hijau di simulasi bersih tanpa
-      kredensial (681/681, re-simulasi segar pasca-remedi audit Task 20).
+      supabase-keepalive.yml (tiap 3 hari) + backup.yml (26-e, cron 02:30 WIB). Salinan kanonik
+      terlacak di ci/workflows/ + ci/github/ → dipulihkan ke .github/ via scripts/dev/restore-ci.mjs
+      (17 test); aktivasi di GitHub menunggu scope Workflows pada PAT — keempat langkah CI terbukti
+      hijau di simulasi bersih tanpa kredensial (845/845, re-simulasi segar pasca-remedi audit Task
+      20).
     </p>
   </body>
 </html>

@@ -39,6 +39,32 @@ export const SIGNED_URL_DEFAULT_EXPIRY_S = 300;
 export const RECORDER_TIMESLICE_MS = 500;
 
 // ============================================================
+// Kuota penyimpanan per-user (remediasi audit 25 M1 — storage burn)
+// ============================================================
+
+/**
+ * Maksimum JUMLAH file snippet suara per user (kuota per-user, audit 25
+ * M1: tanpa batas ini seorang user bisa membakar kuota 1 GB project
+ * seorang diri). 5 versi snippet lebih dari cukup untuk "intro suara
+ * profil" — snippet aktif memang selalu satu (profiles.voice_snippet_path).
+ */
+export const MAX_VOICE_SNIPPET_FILES = 5;
+
+/**
+ * Maksimum TOTAL byte folder `${userId}/` di bucket voice-snippets
+ * (100 MiB = 104.857.600 byte). Dipakai bersama MAX_VOICE_SNIPPET_FILES;
+ * yang mana pun tercapai lebih dulu → penolakan 'quota_exceeded'.
+ */
+export const MAX_VOICE_SNIPPET_TOTAL_BYTES = 104_857_600;
+
+/**
+ * Batas Ukuran halaman panggilan storage list — API Supabase mengembalikan
+ * maksimum 100 objek per panggilan, sehingga penghitungan kuota WAJIB
+ * memaginasi (limit+offset) sampai folder habis (remediasi audit 25 M1).
+ */
+export const STORAGE_LIST_PAGE_SIZE = 100;
+
+// ============================================================
 // Skema validasi (Zod)
 // ============================================================
 
@@ -117,6 +143,7 @@ export type VoiceSnippetErrorCode =
   | 'wrong-mime'
   | 'invalid-path'
   | 'storage-error'
+  | 'quota_exceeded'
   | 'profile-error'
   | 'invalid-profile-row'
   | 'update-empty';
@@ -202,7 +229,19 @@ export interface StorageBucketLike {
     expiresIn: number,
   ): Promise<SingleResponseLike<{ signedUrl: string }>>;
   remove(paths: string[]): Promise<SingleResponseLike<unknown>>;
-  list(folder?: string): Promise<SingleResponseLike<Array<{ name: string }>>>;
+  /**
+   * Daftar objek dengan prefix path — opsi paginasi (limit/offset) +
+   * metadata.size dipakai penghitung kuota (audit 25 M1). Entri folder
+   * punya metadata null (konvensi Supabase: id null) — diabaikan.
+   */
+  list(
+    folder?: string,
+    options?: {
+      limit?: number;
+      offset?: number;
+      sortBy?: { column: string; order?: 'asc' | 'desc' };
+    },
+  ): Promise<SingleResponseLike<Array<{ name: string; metadata?: { size?: number } | null }>>>;
 }
 
 export interface SupabaseStorageLike {

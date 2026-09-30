@@ -59,7 +59,7 @@ Aturan penting (keharusan Vite + keamanan):
 ## Testing
 
 - **Vitest** — unit test untuk logic murni (Zod schema, SDP munging,
-  kalkulasi posisi, cache). Tidak butuh browser. 681 test, 48 file (termasuk scripts/dev/e2e-stress.test.mts — agregasi stress dites langsung)
+  kalkulasi posisi, cache). Tidak butuh browser. 845 test, 51 file (termasuk scripts/dev/e2e-stress.test.mts — agregasi stress dites langsung)
   (termasuk `src/db/migrations.test.ts` — migrasi dieksekusi di PostgreSQL
   asli via PGlite/WASM + RLS/grant/trigger diuji empiris).
 - **Playwright** — E2E via `test-harness/` (halaman HTML polos yang memuat
@@ -128,8 +128,12 @@ bun scripts/db/apply-migrations.mjs               # apply yang pending
   role client + drop policy insert-own dead-code; provisioning tetap
   lewat trigger `handle_new_user`, penulis sah `is_premium` tetap
   service_role). Keduanya terverifikasi eksekusi+semantik di PGlite
-  (regresi rantai eskalasi + event trigger) — **apply ke cloud menunggu
-  token Supabase aktif kembali** (`bun scripts/db/apply-migrations.mjs`).
+  (regresi rantai eskalasi + event trigger) — dan **sudah applied ke
+  cloud** bersama 0016/0017 (state Task 24).
+- **0018 = remedi audit 23 (apply-PENDING di cloud)** — rantai
+  friendship-spoof masih hidup di database cloud sampai 0018 di-apply;
+  jalur apply + verifikasi terdokumentasi di `docs/deploy-checklist.md`
+  seksi b. 0019–0021 (remedi audit 25) menyusul begitu merge.
 
 ### Catatan desain monitoring (F1.8)
 
@@ -177,7 +181,8 @@ Setup (sekali, oleh pemilik repo):
    (untracked + excluded, tak pernah ter-push). Salinan kanonik kini
    terlacak git di `ci/workflows/`; pulihkan salinannya ke
    `.github/workflows/` (mis. setelah reset) dengan
-   `bun scripts/dev/restore-ci.mjs` (idempoten, 11 unit test).
+   `bun scripts/dev/restore-ci.mjs` (idempoten, 17 unit test — sejak 26-e
+   juga menyinkronkan file `.github/` non-workflow dari `ci/github/`).
    File BELUM ter-push — PAT tanpa scope `workflow` menolak push yang
    menyentuh `.github/workflows` (bukti empiris Task 17) — jadi cron ini
    BELUM berjalan di GitHub. Membuka (salah satu):
@@ -293,8 +298,8 @@ src/
                  paddle-webhook (router event: transaction.completed →
                  premium, subscription.canceled → non; core teruji)
                  premium-status-service (baca is_premium + revalidasi)
-  db/            ✅ Fase 2/12 (test-only): migrations.test.ts — 15
-                 migrasi dijalankan di PGlite + idempotensi + matriks
+  db/            ✅ Fase 2/12 (test-only): migrations.test.ts — 21
+                 migrasi (0001–0021) dijalankan di PGlite + idempotensi + matriks
                  RLS + lockdown kolom is_premium + guard blokir +
                  regresi audit Task 19 (rantai eskalasi premium putus,
                  event trigger ensure_rls)
@@ -303,8 +308,13 @@ supabase/
                  guard trigger, messages+RLS gate pertemanan, is_premium+
                  lockdown column-grant, bucket soundboard + storage RLS)
                  + 0014–0015 (remedi audit Task 19: backfill
-                 rls_auto_enable/ensure_rls + revoke INSERT profiles —
-                 apply ke cloud menunggu token)
+                 rls_auto_enable/ensure_rls + revoke INSERT profiles)
+                 + 0016–0018 (room registry + otorisasi realtime per-room
+                 + audit fixes — Task 21-23; 0018 apply ke cloud menunggu
+                 token, lihat docs/deploy-checklist.md)
+                 + 0019–0021 (remedi audit 25: rate limit pesan server +
+                 guard room, grant hygiene, idempotency + verifikasi
+                 harga Paddle)
   functions/
     paddle-webhook/ SKELETON Deno (di-ignore tsc/eslint proyek; import
                  map terkunci + sloppy-imports; BELUM pernah dijalankan —
@@ -337,26 +347,36 @@ scripts/
                  ✅ 14-c: restore-qa-users.mjs (pemulih pasca-reset: reset
                  password 3 QA via admin API + tulis ulang TEST_USER_* di
                  .env; idempoten, tanpa secret di repo)
-                 ✅ 17: restore-ci.mjs (pulihkan .github/workflows dari
-                 salinan kanonik ci/workflows/ — idempoten + guard
-                 .git/info/exclude; 11 unit test di restore-ci.test.mts)
-supabase/
-  migrations/    ✅ F1.2 (profiles + RLS + bucket voice-snippets + grants)
-                  ✅ F1.5 (0006: voice_snippet_path + policy select authenticated)
+                 ✅ 17: restore-ci.mjs (pulihkan .github/ dari salinan
+                 kanonik ci/ — workflows dari ci/workflows/ + file
+                 non-workflow dari ci/github/ — idempoten + guard
+                 .git/info/exclude; 17 unit test di restore-ci.test.mts)
 ci/
   workflows/      ✅ F1.7 → DIBUAT ULANG Task 17 (file asli hilang permanen
                   di reset sandbox #3 — untracked + excluded; salinan
                   kanonik kini TERLACAK GIT di sini = kebal reset):
                   ci.yml (push/PR main: lint + typecheck + test + build via
                     bun — keempat langkah terbukti hijau di SIMULASI CI
-                    bersih tanpa .env/kredensial, 668/668; e2e tetap
+                    bersih tanpa .env/kredensial, 845/845; e2e tetap
                     lokal — butuh secrets TEST_USER_* + VITE_* bila mau
-                    diaktifkan di CI)
+                    diaktifkan di CI; 26-e: actions SHA-pinned +
+                    permissions contents:read + persist-credentials false)
                   supabase-keepalive.yml (cron tiap 3 hari: `select 1`
                     lewat Management API, sukses 200/201 — endpoint
                     diverifikasi live Task 17; + workflow_dispatch untuk
-                    picu manual)
-                  → disalin ke .github/workflows/ oleh
+                    picu manual; 26-e: permissions contents:read)
+                  backup.yml (26-e: cron 02:30 WIB harian + manual —
+                    pg_dump + enkripsi age via scripts/backup/backup.sh,
+                    assert semua output .age SEBELUM upload-artifact;
+                    tidak aktif sampai secrets DATABASE_URL +
+                    AGE_RECIPIENT diisi — lihat docs/deploy-checklist.md
+                    seksi f & docs/backup-runbook.md)
+  github/        ✅ 26-e: salinan kanonik file .github/ non-workflow —
+                  dependabot.yml (ecosystem `bun` — terverifikasi docs
+                  resmi GitHub — + github-actions, weekly, groups
+                  minor+patch), CODEOWNERS, SECURITY.md; disinkronkan
+                  ke .github/ oleh scripts/dev/restore-ci.mjs
+                  → semua salinan ci/ di atas disalin ke .github/ oleh
                     scripts/dev/restore-ci.mjs; aktivasi di GitHub
                     menunggu scope Workflows pada PAT (atau salin manual
                     via web UI — lihat seksi keepalive di bawah)
@@ -368,8 +388,11 @@ ci/
   (opsional). Prefix `VITE_` diperlukan karena `RTCPeerConnection`
   berjalan di browser — kredensial TURN statis memang sampai ke bundle
   klien (praktik standar WebRTC untuk kredensial statis; dapat di-revoke
-  kapan saja dari dashboard Metered). Kredensial ephemeral via backend
-  tercatat sebagai opsi masa depan.
+  kapan saja dari dashboard penyedia TURN). Untuk produksi, kredensial
+  **ephemeral via backend direkomendasikan** (riset 22-f + audit 25-c:
+  Cloudflare Calls TURN — langkah sisi-cloud di
+  `docs/deploy-checklist.md` seksi c; TURN standalone dikenakan
+  $0.05/GB egress).
 - `parseTurnEnv` murni: hasil union `disabled | enabled | invalid` dengan
   seluruh alasan terkumpul (bukan hanya yang pertama). URL boleh banyak
   (dipisah koma), skema wajib `turn:`/`turns:`.
@@ -378,7 +401,11 @@ ci/
   pemanggil agar tidak tertelan diam-diam.
 - Malam implementasi: env nyata belum berisi TURN → `envStatus` harness
   menampilkan `turn: disabled` (jujur, bukan dipaksa tampak aktif).
-  Live-verifikasi jalur `enabled` menunggu kredensial Metered dari user.
+  ~~Live-verifikasi jalur `enabled` menunggu kredensial Metered dari
+  user~~ (usang — 26-e): jalur `enabled` kini terverifikasi penuh OFFLINE
+  lewat rig TURN lokal P0-2 (`docs/fase-2-turn-verifikasi.md`); bukti
+  produksi menyusul lewat Cloudflare Calls TURN ephemeral
+  (`docs/deploy-checklist.md` seksi c).
 - **Verifikasi end-to-end (Task 11-a)**: `bun run probe:webrtc --turn` —
   relay-forced (`iceTransportPolicy "relay"`), memakai `parseTurnEnv`
   yang sama dengan mesh (satu sumber kebenaran), membuktikan relay lewat

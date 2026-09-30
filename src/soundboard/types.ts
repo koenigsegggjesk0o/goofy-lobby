@@ -55,6 +55,32 @@ export const CUSTOM_SOUND_EXTENSION_BY_MIME: Readonly<
 export const SIGNED_URL_DEFAULT_EXPIRY_S = 300;
 
 // ============================================================
+// Kuota penyimpanan per-user (remediasi audit 25 M1 — storage burn)
+// ============================================================
+
+/**
+ * Maksimum JUMLAH custom sound per user (kuota per-user, audit 25 M1:
+ * tanpa batas ini seorang user bisa membakar kuota 1 GB project
+ * seorang diri). 30 klip pendek per akun — soundboard penuh bagi satu
+ * room masih jauh di bawahnya.
+ */
+export const MAX_CUSTOM_SOUND_FILES = 30;
+
+/**
+ * Maksimum TOTAL byte folder `${userId}/` di bucket soundboard-sounds
+ * (150 MiB = 157.286.400 byte). Dipakai bersama MAX_CUSTOM_SOUND_FILES;
+ * yang mana pun tercapai lebih dulu → penolakan 'quota_exceeded'.
+ */
+export const MAX_CUSTOM_SOUND_TOTAL_BYTES = 157_286_400;
+
+/**
+ * Ukuran halaman panggilan storage list — API Supabase mengembalikan
+ * maksimum 100 objek per panggilan, sehingga penghitungan kuota WAJIB
+ * memaginasi (limit+offset) sampai folder habis (remediasi audit 25 M1).
+ */
+export const STORAGE_LIST_PAGE_SIZE = 100;
+
+// ============================================================
 // Skema validasi (Zod)
 // ============================================================
 
@@ -123,6 +149,7 @@ export type SoundboardErrorCode =
   | 'wrong-mime'
   | 'invalid-path'
   | 'storage-error'
+  | 'quota_exceeded'
   | 'invalid-preset';
 
 export class SoundboardError extends Error {
@@ -174,7 +201,19 @@ export interface StorageBucketLike {
     expiresIn: number,
   ): Promise<SingleResponseLike<{ signedUrl: string }>>;
   remove(paths: string[]): Promise<SingleResponseLike<unknown>>;
-  list(folder?: string): Promise<SingleResponseLike<Array<{ name: string }>>>;
+  /**
+   * Daftar objek dengan prefix path — opsi paginasi (limit/offset) +
+   * metadata.size dipakai penghitung kuota (audit 25 M1). Entri folder
+   * punya metadata null (konvensi Supabase: id null) — diabaikan.
+   */
+  list(
+    folder?: string,
+    options?: {
+      limit?: number;
+      offset?: number;
+      sortBy?: { column: string; order?: 'asc' | 'desc' };
+    },
+  ): Promise<SingleResponseLike<Array<{ name: string; metadata?: { size?: number } | null }>>>;
 }
 
 export interface SupabaseStorageLike {

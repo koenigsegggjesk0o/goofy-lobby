@@ -1,0 +1,12 @@
+{
+  // Import map Edge Function turn-credentials — versi PERSIS sama dengan
+  // package.json proyek (jangan drift saat upgrade dependency).
+  "imports": {
+    "zod": "npm:zod@4.6.5",
+    "@supabase/supabase-js": "npm:@supabase/supabase-js@2.117.2"
+  },
+  // Function ini tidak mengimpor modul src/ (murni Web API + supabase-js)
+  // sehingga tidak butuh sloppy-imports; unstable dibiarkan kosong demi
+  // keseragaman struktur dengan function lain.
+  "unstable": []
+}

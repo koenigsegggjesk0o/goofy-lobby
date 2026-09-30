@@ -8,6 +8,7 @@ import {
   MAX_CONVERSATION_LIMIT,
   MessageBodySchema,
   MessageRowSchema,
+  SERVER_MESSAGE_RATE_LIMIT_RETRY_AFTER_MS,
   UuidSchema,
 } from './types';
 import type {
@@ -192,11 +193,21 @@ function clampConversationLimit(limit: number | undefined): number {
 }
 
 /**
- * Pemetaan error insert ke kode domain: pesan trigger blokir → 'blocked';
- * check_violation (23514) → 'self' (body sudah divalidasi lokal, satu-satunya
- * check yang tersisa adalah messages_no_self); selain itu 'db-error'.
+ * Pemetaan error insert ke kode domain: rate limit SERVER (trigger 0019,
+ * 'RATE_LIMITED_MESSAGES') → 'rate-limited' dengan retryAfterMs = batas atas
+ * jendela 10 detik; pesan trigger blokir → 'blocked'; check_violation
+ * (23514) → 'self' (body sudah divalidasi lokal, satu-satunya check yang
+ * tersisa adalah messages_no_self); selain itu 'db-error'. Pesan mentah
+ * server tidak diteruskan ke pemanggil (hanya dilekatkan sebagai cause).
  */
 function mapInsertError(error: SupabaseErrorLike): ChatError {
+  if (error.message.includes('RATE_LIMITED_MESSAGES')) {
+    return new ChatError(
+      'rate-limited',
+      `server menolak pesan: terlalu banyak pesan terkirim dalam 10 detik terakhir (trigger rate limit 0019) — coba lagi dalam ${SERVER_MESSAGE_RATE_LIMIT_RETRY_AFTER_MS / 1000} detik`,
+      { retryAfterMs: SERVER_MESSAGE_RATE_LIMIT_RETRY_AFTER_MS, cause: error },
+    );
+  }
   if (error.message.includes('message rejected: blocked')) {
     return new ChatError(
       'blocked',

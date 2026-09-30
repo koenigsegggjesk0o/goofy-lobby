@@ -30,6 +30,7 @@ export type RoomGateErrorCode =
   | 'ROOM_NOT_FOUND'
   | 'ROOM_FULL'
   | 'ROOM_CREATE_LIMIT'
+  | 'BLOCKED_FROM_ROOM'
   | 'UNKNOWN';
 
 /** Pesan human per kode error (untuk UI Fase 3 / harness). */
@@ -40,18 +41,30 @@ export const ROOM_GATE_ERROR_MESSAGES: Record<RoomGateErrorCode, string> = {
   ROOM_NOT_FOUND: 'room tidak ditemukan atau sudah berakhir',
   ROOM_FULL: 'room penuh',
   ROOM_CREATE_LIMIT: 'terlalu banyak room dibuat — tunggu sebentar',
+  // 0019 (remediasi audit 25 M4): pemilik room memblokir caller → join_room
+  // me-raise exception 'BLOCKED_FROM_ROOM' (bukan token data — penolakan
+  // tidak perlu mencatat percobaan join di room itu).
+  BLOCKED_FROM_ROOM: 'kamu diblokir pemilik room ini',
   UNKNOWN: 'kegagalan gerbang room tidak dikenal',
 };
 
 /** Error terpetakan dari gerbang registri room (baca .code, bukan teks). */
 export class RoomGateError extends Error {
   readonly code: RoomGateErrorCode;
+  /**
+   * Detail mentah sisi server (pesan RPC / respons asli) — DIPISAHKAN dari
+   * `.message` supaya UI tidak menampilkan teks internal (remediasi audit 25-a
+   * LOW-5: UNKNOWN dulu membawa pesan server mentah ke user). QA/harness
+   * tetap bisa membaca detail ini untuk diagnosis.
+   */
+  readonly serverMessage?: string;
 
-  constructor(code: RoomGateErrorCode, detail?: string) {
+  constructor(code: RoomGateErrorCode, detail?: string, serverMessage?: string) {
     const human = ROOM_GATE_ERROR_MESSAGES[code];
     super(detail === undefined ? human : `${human} (${detail})`);
     this.name = 'RoomGateError';
     this.code = code;
+    this.serverMessage = serverMessage;
   }
 }
 
@@ -139,7 +152,11 @@ export class RoomGate {
       throw mapRpcError('create_room', error.message);
     }
     if (typeof data !== 'string') {
-      throw new RoomGateError('UNKNOWN', `respons create_room bukan kode: ${JSON.stringify(data)}`);
+      throw new RoomGateError(
+        'UNKNOWN',
+        'dari create_room',
+        `respons create_room bukan kode: ${JSON.stringify(data)}`,
+      );
     }
     const token = tokenFromData(data);
     if (token !== null) {
@@ -147,8 +164,13 @@ export class RoomGate {
     }
     const parsed = RoomCodeSchema.safeParse(data);
     if (!parsed.success) {
-      // Server mengirim kode di luar kontrak — jangan pernah diteruskan.
-      throw new RoomGateError('UNKNOWN', `kode room server tidak valid: ${data}`);
+      // Server mengirim kode di luar kontrak — jangan pernah diteruskan ke
+      // .message (detail mentah hanya di serverMessage).
+      throw new RoomGateError(
+        'UNKNOWN',
+        'dari create_room',
+        `kode room server tidak valid: ${data}`,
+      );
     }
     this.#startHeartbeat(parsed.data);
     return parsed.data;
@@ -174,8 +196,11 @@ export class RoomGate {
     if (data !== 'OK') {
       const token = tokenFromData(data);
       if (token === null) {
+        // Respons asli disimpan di serverMessage — bukan di .message
+        // (remediasi audit 25-a LOW-5).
         throw new RoomGateError(
           'UNKNOWN',
+          'dari join_room',
           `respons join_room tak dikenal: ${JSON.stringify(data)}`,
         );
       }
@@ -236,16 +261,24 @@ export class RoomGate {
 
 function mapRpcError(fn: string, message: string): RoomGateError {
   const upper = message.toUpperCase();
+  // 0019: penolakan krn diblokir pemilik room (exception PG, bukan token
+  // data) — dipetakan EKSPLISIT sebelum UNKNOWN supaya UI bisa menampilkan
+  // pesan yang benar (audit 25 M4).
+  if (upper.includes('BLOCKED_FROM_ROOM')) {
+    return new RoomGateError('BLOCKED_FROM_ROOM', `dari ${fn}`, message);
+  }
   for (const token of SERVER_TOKENS) {
     if (upper.includes(token)) {
-      return new RoomGateError(token, `dari ${fn}`);
+      return new RoomGateError(token, `dari ${fn}`, message);
     }
   }
   // Tanpa JWT/ kedaluwarsa — PostgREST menolak sebelum RPC jalan.
   if (upper.includes('JWT') || upper.includes('401')) {
-    return new RoomGateError('NOT_AUTHENTICATED', `dari ${fn}: ${message}`);
+    return new RoomGateError('NOT_AUTHENTICATED', `dari ${fn}`, message);
   }
-  return new RoomGateError('UNKNOWN', `dari ${fn}: ${message}`);
+  // Pesan mentah TIDAK lagi masuk .message (audit 25-a LOW-5) — hanya ke
+  // serverMessage untuk diagnosis QA.
+  return new RoomGateError('UNKNOWN', `dari ${fn}`, message);
 }
 
 /** Token kontrak DATA (kesamaan eksak — data server bersih, bukan narasi). */

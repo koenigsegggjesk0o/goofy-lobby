@@ -1,0 +1,38 @@
+# Salinan kanonik — file .github/ tidak bisa di-commit (PAT tanpa scope
+# workflow; lihat header scripts/dev/restore-ci.mjs). File ini disinkronkan
+# ke .github/dependabot.yml oleh script itu.
+#
+# Ecosystem "bun" TERVERIFIKASI terhadap docs resmi GitHub (30 Sep 2026):
+# https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference
+# — tabel "Package manager": Bun → nilai YAML `bun` → versi didukung
+# >= v1.1.39 (repo ini: bun 1.3.14 + bun.lock). Flag
+# `enable-beta-ecosystems` sudah tidak diperlukan (docs: "Not currently in
+# use" — bun sudah GA).
+version: 2
+updates:
+  # Dependensi JS/TS lewat bun.lock (5 prod + 14 dev — audit 25-d: 19/19
+  # bersih saat ini; Dependabot menjaga ketinggalan versi + advisori ke depan).
+  - package-ecosystem: bun
+    directory: '/'
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    # Update minor+patch digabung satu PR (hemat antrean review); major
+    # tetap PR terpisah agar terbaca.
+    groups:
+      minor-dan-patch:
+        update-types:
+          - 'minor'
+          - 'patch'
+    commit-message:
+      prefix: 'chore(deps)'
+
+  # Action di workflow CI juga dependensi supply-chain (audit 25-d
+  # menemukan pin tag — kini SHA-pinned; Dependabot menjaga pin tetap
+  # mengikuti rilis resmi dengan PR).
+  - package-ecosystem: github-actions
+    directory: '/'
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: 'chore(deps)'

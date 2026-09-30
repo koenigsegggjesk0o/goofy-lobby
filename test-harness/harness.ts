@@ -27,8 +27,10 @@
  *                  (AudioWorklet pitch-shift-processor asli browser — TANPA
  *                  kredensial Supabase), pitchShiftMath (konversi murni)
  *
- * Token captcha default = dummy resmi Turnstile (test key selalu lolos) —
- * konfigurasi Auth Supabase proyek ini memakai test key hingga Fase 3.
+ * Token captcha default = dummy resmi Turnstile (XXXX.DUMMY.TOKEN.XXXX).
+ * Catatan akurat (remediasi 25-a): secret Turnstile live di dashboard
+ * proyek ini adalah NYATA (bukan test key) — token dummy maupun absent
+ * DITOLAK captcha_failed (terbukti empiris Task 22-e).
  */
 
 import { readClientEnv } from '../src/lib/env';
@@ -340,7 +342,7 @@ declare global {
 // Util
 // ============================================================
 
-/** Token dummy resmi Turnstile — lolos siteverify test key (aktif s.d. Fase 3). */
+/** Token dummy resmi Turnstile — secret live NYATA: token dummy ditolak captcha_failed (bukti 22-e). */
 const TURNSTILE_DUMMY_TOKEN = 'XXXX.DUMMY.TOKEN.XXXX';
 
 const MESH_LOG_LIMIT = 200;
@@ -361,6 +363,17 @@ function describeError(error: unknown): ErrorDetail {
     };
   }
   return { message: String(error) };
+}
+
+/**
+ * Redaksi userinfo URL TURN pada OUTPUT LOG (remediasi 25-a / 25-c item 3):
+ * `scheme://user:pass@host` → `scheme://***:***@host`. Nilai asli tetap
+ * dipakai untuk koneksi (RTCPeerConnection) — hanya cetakan yang disikat.
+ * Duplikasi kecil dengan scripts/dev/probe-webrtc.mjs disengaja (script
+ * CLI vs bundle harness tidak berbagi modul).
+ */
+function redactTurnUrl(value: string): string {
+  return value.replace(/\/\/[^/@:\s]+:[^/@:\s]+@/g, '//***:***@');
 }
 
 interface MockAudioStream {
@@ -441,7 +454,7 @@ function toSelectedPairSummary(pair: SelectedPairInfo | null): MeshPeerSelectedP
   };
 }
 
-/** Ringkasan pesan signaling untuk log (SDP dipangkas, kandidat utuh). */
+/** Ringkasan pesan signaling untuk log (SDP dipangkas; kandidat TANPA alamat — hanya type/protokol/komponen). */
 function summarizeSignal(raw: unknown): Record<string, unknown> {
   if (raw === null || typeof raw !== 'object') {
     return { kind: typeof raw };
@@ -484,9 +497,24 @@ function summarizeSignal(raw: unknown): Record<string, unknown> {
     summary.ufrag = ufrag ?? null;
   }
   if (typeof signal.candidate === 'string') {
-    summary.cand = signal.candidate.slice(0, 90);
+    summary.cand = summarizeIceCandidate(signal.candidate);
   }
   return summary;
+}
+
+/**
+ * Ringkasan kandidat ICE TANPA alamat/IP mentah (remediasi 25-a, pola
+ * relay-stats.ts:37-65 — field ringkas saja): hanya candidateType
+ * (host/srflx/prflx/relay), protokol transport, dan komponen (1=RTP,
+ * 2=RTCP) yang diekstrak dari string kandidat via regex.
+ */
+function summarizeIceCandidate(raw: string): Record<string, unknown> {
+  const parts = raw.trim().split(/\s+/);
+  return {
+    candidateType: /\btyp\s+(\S+)/.exec(raw)?.[1] ?? null,
+    protocol: parts[2] ?? null,
+    component: parts[1] ?? null,
+  };
 }
 
 // ============================================================
@@ -639,17 +667,35 @@ class Harness implements HarnessApi {
   }
 
   async signUp(email: string, password: string, captchaToken?: string): Promise<AuthProbeResult> {
+    // Pesan error mentah Supabase TIDAK diteruskan ke log halaman (remediasi
+    // 25-a — pola enumerasi email bila Confirm-email OFF di cloud): UI hanya
+    // melihat pesan generik; detail lengkap tetap ada di console.error utk QA.
+    const GENERIC_SIGNUP_ERROR = 'Pendaftaran gagal — periksa kredensial/kode captcha.';
     try {
       const options = captchaToken === undefined ? {} : { captchaToken };
       const { data, error } = await getAppSupabase().auth.signUp({ email, password, options });
       if (error !== null) {
-        this.logLine(`signUp DITOLAK: ${describeError(error).message}`);
-        return { ok: false, userId: null, ...describeError(error) };
+        console.error('[harness] signUp ditolak (detail QA):', describeError(error));
+        this.logLine(`signUp DITOLAK: ${GENERIC_SIGNUP_ERROR}`);
+        // code/status tetap dikembalikan — kontrak e2e DoD #4 (captcha_failed)
+        // tanpa membocorkan pesan server.
+        return {
+          ok: false,
+          userId: null,
+          message: GENERIC_SIGNUP_ERROR,
+          ...(typeof (error as { code?: unknown }).code === 'string'
+            ? { code: (error as { code: string }).code }
+            : {}),
+          ...(typeof (error as { status?: unknown }).status === 'number'
+            ? { status: (error as { status: number }).status }
+            : {}),
+        };
       }
       this.logLine(`signUp ok: ${data.user?.id ?? '(tanpa user)'}`);
       return { ok: true, userId: data.user?.id ?? null, message: 'signup diterima' };
     } catch (error) {
-      return { ok: false, userId: null, ...describeError(error) };
+      console.error('[harness] signUp exception (detail QA):', describeError(error));
+      return { ok: false, userId: null, message: GENERIC_SIGNUP_ERROR };
     }
   }
 
@@ -1130,8 +1176,10 @@ class Harness implements HarnessApi {
       // ditelan: invalid → log alasan + fallback STUN-only (pola monitoring).
       const { iceServers, turnStatus, reasons } = resolveIceServers();
       if (turnStatus === 'invalid') {
+        // Alasan bisa memuat URL TURN mentah (mis. URL tidak valid) — userinfo
+        // user:pass@ di-redaksi di output log (remediasi 25-a).
         this.logLine(
-          `joinMesh: TURN env INVALID — fallback STUN-only (${(reasons ?? []).join('; ')})`,
+          `joinMesh: TURN env INVALID — fallback STUN-only (${(reasons ?? []).map(redactTurnUrl).join('; ')})`,
         );
       } else if (turnStatus === 'enabled') {
         this.logLine('joinMesh: TURN aktif — STUN default + entri TURN relay');

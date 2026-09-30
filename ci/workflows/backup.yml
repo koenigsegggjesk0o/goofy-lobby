@@ -1,0 +1,137 @@
+# Backup database terjadwal — remedi temuan audit 25-d (HIGH-3 "zero backup"):
+# free tier Supabase TIDAK punya backup otomatis (docs resmi: pengguna free
+# tier disarankan "regularly export their data using the Supabase CLI db dump
+# command"). Lihat docs/backup-runbook.md untuk prosedur restore.
+#
+# CATATAN PENTING (kejujuran status):
+# - Workflow ini TIDAK akan berhasil sampai secrets diisi: DATABASE_URL +
+#   AGE_RECIPIENT (repo GitHub → Settings → Secrets and variables → Actions).
+#   Job `preflight` gagal dengan pesan jelas bila belum — jangan isi nilai
+#   secret di file ini.
+# - Artefak pada repo PUBLIK dapat diunduh oleh user GitHub login mana pun —
+#   karena itu SEMUA file HARUS terenkripsi age (ekstensi .age) SEBELUM
+#   upload; job ini meng-assert itu dan menolak upload bila ada file polos.
+#   Repo private tetap lebih aman untuk artefak (lihat docs/deploy-checklist.md
+#   seksi GitHub).
+# - Kontrak scripts/backup/backup.sh (dikelola terpisah): membaca env
+#   DATABASE_URL, AGE_RECIPIENT, BACKUP_RETENTION_DAYS; menulis
+#   ./backups/backup-*.sql.gz.age.
+
+name: Backup DB
+
+on:
+  schedule:
+    # 19:30 UTC = 02:30 WIB (UTC+7) harian — jam sepi pemakaian Indonesia.
+    - cron: '30 19 * * *'
+  workflow_dispatch:
+
+# GITHUB_TOKEN diminimalkan (remedi audit 25-d): hanya perlu membaca repo utk
+# mengambil scripts/backup/backup.sh — upload artifact tidak butuh token repo.
+permissions:
+  contents: read
+
+jobs:
+  # Gerbang dulu: secrets wajib harus terisi, kalau tidak gagal LOUD di awal
+  # (bukan setelah 10 menit menyalin repo & mengundung age).
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verifikasi secrets wajib terisi
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          AGE_RECIPIENT: ${{ secrets.AGE_RECIPIENT }}
+        run: |
+          set -eu
+          # Hanya menguji KEBERADAAN — nilai secret tidak pernah di-echo.
+          missing=''
+          [ -n "${DATABASE_URL:-}" ] || missing="${missing} DATABASE_URL"
+          [ -n "${AGE_RECIPIENT:-}" ] || missing="${missing} AGE_RECIPIENT"
+          if [ -n "$missing" ]; then
+            echo "::error::Secret belum diisi:${missing} — tambahkan di Settings → Secrets and variables → Actions. Workflow backup tidak bisa berjalan." >&2
+            exit 1
+          fi
+          echo "OK: secrets DATABASE_URL + AGE_RECIPIENT terisi."
+
+  backup:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # SHA penuh, bukan tag (remedi audit 25-d) — actions/checkout v7.0.1,
+      # SHA diverifikasi `git ls-remote ... refs/tags/v7.0.1`.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (SHA-pinned)
+        with:
+          # Tidak ada langkah yang butuh token GitHub setelah checkout.
+          persist-credentials: false
+
+      # age dipin versi + checksum (bukan "latest") — alat enkripsi backup
+      # tidak boleh bisa diganti diam-diam pihak ketiga.
+      #
+      # Versi: v1.3.2 (rilis 29 Agu 2026) — termutakhir saat penulisan
+      # (30 Sep 2026); instruksi remediasi awal menyebut v1.2.1, tapi veri-
+      # fikasi umur rilis menunjukkan v1.2.1 (Des 2024) sudah ~21 bulan
+      # tertinggal (tag v1.3.0–v1.3.2 ada di upstream).
+      #
+      # Sumber checksum: rilis age TIDAK menyertakan aset SHA256SUMS —
+      # digest di bawah dihitung dari unduhan RESMI
+      # https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-amd64.tar.gz
+      # (dua unduhan independen, byte-identik, 30 Sep 2026). Rilis yang sama
+      # juga membawa aset .proof Sigstore/Rekor per artefak sebagai verifikasi
+      # integritas tambahan.
+      - name: Install age v1.3.2 (pin versi + verifikasi sha256)
+        env:
+          AGE_VERSION: v1.3.2
+          AGE_TARBALL_SHA256: cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10
+        run: |
+          set -eu
+          curl -sSfL -o /tmp/age.tar.gz \
+            "https://github.com/FiloSottile/age/releases/download/${AGE_VERSION}/age-${AGE_VERSION}-linux-amd64.tar.gz"
+          echo "${AGE_TARBALL_SHA256}  /tmp/age.tar.gz" | sha256sum --check --strict -
+          tar -xzf /tmp/age.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/age/age /tmp/age/age-keygen /usr/local/bin/
+          age --version
+
+      # KONTRAK backup.sh: env DATABASE_URL / AGE_RECIPIENT /
+      # BACKUP_RETENTION_DAYS → ./backups/backup-*.sql.gz.age.
+      # DATABASE_URL read-only user (bukan service_role) lebih baik bila
+      # bisa — lihat docs/deploy-checklist.md seksi Backup.
+      - name: Backup + enkripsi age (scripts/backup/backup.sh)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          AGE_RECIPIENT: ${{ secrets.AGE_RECIPIENT }}
+          BACKUP_RETENTION_DAYS: '14'
+        run: bash scripts/backup/backup.sh
+
+      # GERBANG enkripsi (WAJIB): artefak repo public dapat diunduh user
+      # login mana pun — semua file di backups/ harus berekstensi .age
+      # (backup-*.sql.gz.age hasil `age -r`) SEBELUM diunggah. File polos
+      # apa pun = upload DITOLAK.
+      - name: ASSERT semua output terenkripsi (.age) sebelum upload
+        run: |
+          set -eu
+          shopt -s nullglob
+          files=(backups/*)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::Tidak ada file di backups/ — backup.sh selesai tanpa output?" >&2
+            exit 1
+          fi
+          for f in "${files[@]}"; do
+            case "$f" in
+              *.age) echo "OK (terenkripsi): $f" ;;
+              *)
+                echo "::error::File TIDAK terenkripsi ditemukan — upload DITOLAK: $f" >&2
+                exit 1
+                ;;
+            esac
+          done
+
+      # actions/upload-artifact v4.6.2 — SHA diverifikasi
+      # `git ls-remote ... refs/tags/v4.6.2` (termutakhir v4.x, 30 Sep 2026).
+      - name: Upload artefak terenkripsi
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 (SHA-pinned)
+        with:
+          name: db-backup-${{ github.run_id }}
+          path: backups/
+          retention-days: 14
+          if-no-files-found: error

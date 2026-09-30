@@ -5,6 +5,11 @@ on:
     - cron: '17 3 */3 * *'
   workflow_dispatch:
 
+# GITHUB_TOKEN diminimalkan (remedi audit 25-d): job ini tidak menulis apa pun
+# ke repo — hanya memanggil Management API Supabase lewat secret akun.
+permissions:
+  contents: read
+
 jobs:
   keepalive:
     runs-on: ubuntu-latest

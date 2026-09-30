@@ -42,8 +42,13 @@ export class Emitter<Events extends object> {
       try {
         (listener as unknown as (payload: Events[K]) => void)(payload);
       } catch (error) {
-        // Satu listener error tidak boleh memutuskan listener lain.
-        console.error('[emitter] error pada listener', String(event), error);
+        // Satu listener error tidak boleh memutuskan listener lain. Log hanya
+        // ringkasan name+message (remediasi 25-a) — objek error mentah bisa
+        // membawa detail internal (stack/properti) yang tidak perlu masuk log.
+        const summary = (
+          error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+        ).slice(0, 500);
+        console.error('[emitter] error pada listener', String(event), summary);
       }
     }
   }

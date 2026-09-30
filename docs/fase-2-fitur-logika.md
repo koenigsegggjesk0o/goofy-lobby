@@ -45,11 +45,13 @@ Zod juga tidak dikumpulkan di `src/schemas/` melainkan co-located di
 
 ## Verifikasi (bukti, bukan klaim)
 
-- **Unit: 597/597 hijau, 44 file** (`bun run test`) — rincian per domain:
+- **Unit: 845/845 hijau, 51 file** (`bun run test`) — rincian per domain:
   friends 82 (4 file), chat 52 (4), soundboard 38 (4), payment 48 (4),
   db/PGlite 11 (1), voicefilter 33 (3), + 331 warisan F1/F2-TURN.
-- **PGlite (Postgres WASM asli, `src/db/migrations.test.ts`)**: 13 migrasi
-  apply bersih berurutan + idempoten (pass kedua), RLS dieksekusi empiris
+- **PGlite (Postgres WASM asli, `src/db/migrations.test.ts`)**: 21 migrasi
+  (0001–0021; angka diperbarui 26-e — awalnya 13 saat dokumen Task 12
+  ditulis, bertambah 0014–0021 dari remedi audit Task 19/23/25) apply
+  bersih berurutan + idempoten (pass kedua), RLS dieksekusi empiris
   dengan `set role authenticated` + klaim JWT di GUC: privasi blocks,
   gate pertemanan insert message, guard blokir (P0001), kanonik (23505),
   lockdown `is_premium` (42501 utk client, sukses utk superuser/service-role

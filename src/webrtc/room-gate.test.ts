@@ -153,18 +153,40 @@ describe('RoomGate.joinRoom', () => {
     expect(gate.currentCode).toBe('7Q2M9XK4');
   });
 
-  it('data selain OK/token → UNKNOWN dengan respons asli terbawa', async () => {
+  it('data selain OK/token → UNKNOWN dengan respons asli di serverMessage (bukan di .message)', async () => {
     const fake = new FakeRpcSupabase(() => ok('WEIRD_RESPONSE'));
     const gate = new RoomGate({ supabase: fake as unknown as RoomGateSupabaseLike });
-    await expect(gate.joinRoom('7Q2M9XK4')).rejects.toMatchObject({ code: 'UNKNOWN' });
+    const failure = gate.joinRoom('7Q2M9XK4');
+    await expect(failure).rejects.toMatchObject({ code: 'UNKNOWN' });
+    await expect(failure).rejects.toMatchObject({
+      serverMessage: expect.stringContaining('WEIRD_RESPONSE'),
+    });
+    // .message TIDAK membawa respons mentah (remediasi audit 25-a LOW-5)
+    const error = await failure.catch((e: unknown) => e);
+    expect((error as Error).message).not.toContain('WEIRD_RESPONSE');
   });
 
-  it('error tak dikenal → UNKNOWN dengan pesan asli terbawa', async () => {
+  it('error tak dikenal → UNKNOWN dengan pesan asli di serverMessage', async () => {
     const fake = new FakeRpcSupabase(() => err('network blip 500'));
     const gate = new RoomGate({ supabase: fake as unknown as RoomGateSupabaseLike });
     const failure = gate.joinRoom('7Q2M9XK4');
     await expect(failure).rejects.toMatchObject({ code: 'UNKNOWN' });
-    await expect(failure).rejects.toThrow(/network blip 500/);
+    await expect(failure).rejects.toMatchObject({
+      serverMessage: expect.stringContaining('network blip 500'),
+    });
+    const error = await failure.catch((e: unknown) => e);
+    expect((error as Error).message).not.toContain('network blip 500');
+  });
+
+  it("exception BLOCKED_FROM_ROOM dari join_room → kode 'BLOCKED_FROM_ROOM' (0019)", async () => {
+    const fake = new FakeRpcSupabase(() =>
+      err('P0001: pemilik room memblokir kamu: BLOCKED_FROM_ROOM'),
+    );
+    const gate = new RoomGate({ supabase: fake as unknown as RoomGateSupabaseLike });
+    const failure = gate.joinRoom('7Q2M9XK4');
+    await expect(failure).rejects.toMatchObject({ code: 'BLOCKED_FROM_ROOM' });
+    const error = await failure.catch((e: unknown) => e);
+    expect((error as Error).message).toContain('diblokir pemilik');
   });
 
   it('pesan JWT kedaluwarsa → NOT_AUTHENTICATED', async () => {

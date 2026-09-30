@@ -1,5 +1,6 @@
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import { Emitter } from '../lib/typed-emitter';
+import { defaultBlockListProvider, type BlockListProvider } from './block-muting';
 import { PeerConnectionManager, type PeerConnectionFactory } from './peer-connection-manager';
 import { isSelectedPairRelay, type SelectedPairInfo } from './relay-stats';
 import { SignalingClient } from './signaling-client';
@@ -26,6 +27,14 @@ export interface MeshRoomControllerOptions {
   self: SessionInfo;
   iceServers?: RTCIceServer[];
   createPeerConnection?: PeerConnectionFactory;
+  /**
+   * Penyedia daftar blokir untuk block-muting mesh (remediasi 25-c M4).
+   * Default: fetchOwnBlockedPeerIds lewat klien supabase yang sama BILA
+   * klien itu punya kemampuan query (.from/.auth — SupabaseClient asli);
+   * klien tanpa kemampuan query (fake test) → fitur mati (bukan error).
+   * Suntik eksplisit untuk test: `() => Promise.resolve(new Set([...]))`.
+   */
+  blockListProvider?: BlockListProvider;
   /** Jam injeksi untuk test. */
   now?: () => number;
 }
@@ -36,6 +45,24 @@ type JoinState = 'idle' | 'joined' | 'left';
 const PENDING_SIGNAL_TTL_MS = 10_000;
 /** Batas antrean per peer — sinyal lebih lama dibuang (terlama duluan). */
 const PENDING_SIGNAL_MAX_PER_PEER = 50;
+
+/**
+ * Batas antrean per pengirim TAK DIKENAL (remediasi 25-c, from-roster
+ * check): lebih ketat dari peer yang sudah terlihat — race presence-signal
+ * nyata hanya mengantre beberapa pesan (1 offer + segelintir kandidat),
+ * sementara penyerang bisa mengirim offer 128 KiB (cap SDP) per pesan.
+ */
+const PENDING_SIGNAL_MAX_PER_UNKNOWN_SENDER = 16;
+
+/**
+ * Batas jumlah PENGIRIM berbeda yang boleh tertahan di antrean pending
+ * (remediasi 25-c, from-roster check). Room sah ≤ 7 remote peer; 16 memberi
+ * margin 2x — pengirim tak dikenal ke-17 dan seterusnya DI-DROP + trail.
+ */
+const PENDING_UNKNOWN_SENDER_MAX = 16;
+
+/** Batas hardcoded jumlah sessionId yang pernah terlihat (anti-bocor memori). */
+const SEEN_SESSIONS_MAX = 1_024;
 
 /**
  * Orkestrator satu room mesh: gabung channel Realtime (broadcast signaling +
@@ -65,6 +92,18 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
   /** Cache pasangan terpilih terakhir per peer (Task 11-b) — diumpan ke
    *  snapshot PeerState.selectedPair; dibersihkan saat peer dilepas. */
   private readonly selectedPairs = new Map<string, SelectedPairInfo>();
+  /**
+   * sessionId yang PERNAH terlihat di presence (remediasi 25-c, from-roster
+   * check) — pengirim dari luar kumpulan ini (dan di luar roster/handshake
+   * saat ini) dianggap tak dikenal. Hanya terisi dari key presence server
+   * (integritas key==sessionId divalidasi readPresence) — tidak bisa
+   * dibanjiri penyerang lewat broadcast.
+   */
+  private readonly seenSessions = new Set<string>();
+  /** Penyedia daftar blokir (block-muting 25-c M4) — undefined = fitur mati. */
+  private readonly blockListProvider: BlockListProvider | undefined;
+  /** UserId yang diblokir (cache hasil provider) — kosong = tidak ada mute. */
+  private blockedUserIds = new Set<string>();
 
   constructor(options: MeshRoomControllerOptions) {
     super();
@@ -86,6 +125,11 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
     this.supabase = options.supabase;
     this.self = self.data;
     this.now = options.now ?? Date.now;
+    // Block-muting (25-c M4): provider default = fetchOwnBlockedPeerIds atas
+    // klien yang sama BILA klien punya kemampuan query (SupabaseClient asli);
+    // fake unit test tanpa .from/.auth → undefined → fitur mati (aman).
+    this.blockListProvider =
+      options.blockListProvider ?? defaultBlockListProvider(options.supabase);
     // P0-1: channel PRIVATE — server menolak subscribe tanpa tiket
     // kepesertaan (RLS realtime.messages, 0017). Subscribe tanpa otorisasi
     // → CHANNEL_ERROR "Unauthorized: You do not have permissions to read
@@ -202,6 +246,11 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
       throw error;
     }
     this.state = 'joined';
+    // Block-muting (25-c M4): muat daftar blokir SEKALI per join — tanpa
+    // await (fail-open): presence sync pertama bisa menyala sebelum fetch
+    // selesai; applyBlockList setelah fetch menutup peer yang terlanjur
+    // terhubung, connectPeer memeriksa cache untuk peer berikutnya.
+    void this.refreshBlockedPeers();
     const tracked = await this.channel.track({ ...this.self });
     // Audit 23-b M3: auto-leave room-full bisa menang di sela await track()
     // (presence sync server tiba setelah subscribe). Tanpa cek ulang ini,
@@ -289,6 +338,64 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
     return this.manager.size + 1;
   }
 
+  /**
+   * Apakah sebuah peer sedang di-mute karena block-list (25-c M4).
+   * Peer tak dikenal → false.
+   */
+  isPeerMuted(sessionId: string): boolean {
+    return this.manager.isPeerMuted(sessionId);
+  }
+
+  /**
+   * Memuat ulang daftar blokir + menerapkannya ke semua peer saat ini
+   * (block-muting 25-c M4). Dipanggil otomatis saat join; panggil manual
+   * setelah user memblokir/membuka blokir di tengah sesi. FAIL-OPEN:
+   * kegagalan provider → daftar dianggap kosong + log — join mesh tidak
+   * pernah terganggu. Tidak pernah melempar.
+   */
+  async refreshBlockedPeers(): Promise<void> {
+    if (this.blockListProvider === undefined) {
+      return; // fitur mati (klien tanpa kemampuan query / tidak di-inject)
+    }
+    let blocked: Set<string>;
+    try {
+      blocked = await this.blockListProvider();
+    } catch (error) {
+      // Fail-open + log (mandat 25-c M4): anggap kosong.
+      console.warn(
+        '[mesh] blockListProvider melempar — daftar blokir dianggap kosong (fail-open):',
+        error instanceof Error ? error.message : String(error),
+      );
+      blocked = new Set();
+    }
+    if (this.state !== 'joined') {
+      return; // leave terjadi di sela fetch — jangan sentuh peer yang sudah dibuang
+    }
+    this.blockedUserIds = blocked;
+    this.applyBlockList();
+  }
+
+  /** Menerapkan block-list saat ini ke semua peer terhubang + event trail. */
+  private applyBlockList(): void {
+    for (const sessionId of this.manager.sessionIds()) {
+      const session = this.manager.getSession(sessionId);
+      if (session === null) {
+        continue;
+      }
+      this.applyMuteForSession(session);
+    }
+  }
+
+  /** Mute/unmute satu peer sesuai block-list + pancarkan event (trail). */
+  private applyMuteForSession(session: SessionInfo): void {
+    const shouldMute = this.blockedUserIds.has(session.userId);
+    if (this.manager.isPeerMuted(session.sessionId) === shouldMute) {
+      return; // tidak berubah — tidak ada event derau
+    }
+    this.manager.setPeerMuted(session.sessionId, shouldMute);
+    this.emit('peer-muted', { sessionId: session.sessionId, muted: shouldMute });
+  }
+
   // ============================================================
   // Internal
   // ============================================================
@@ -309,9 +416,33 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
         // (subscribe+track lebih dulu, sync ~1-2 s belakangan). Membuang
         // offer/kandidat di sini = deadlock negosiasi — antrekan, nanti
         // di-flush saat peer benar-benar terdaftar lewat connectPeer.
+        //
+        // FROM-ROSTER CHECK (remediasi 25-c, spoofing insider LOW): pesan
+        // dari pengirim TAK DIKENAL — bukan di roster presence, bukan pula
+        // sedang handshake/pending-dial (manager/pendingSignals), dan tidak
+        // pernah terlihat di presence (seenSessions) — di-DROP + trail
+        // bila buffer pending sudah penuh pengirim berbeda. Pesan PERTAMA
+        // dari pengirim baru tetap diantrekan (dengan batas ketat per
+        // pengirim) supaya race presence-ADD yang terdokumentasi tidak
+        // pecah — pengirim yang sah akan segera muncul di presence dan
+        // meng-flush antreannya; pengirim fiktif tidak pernah muncul dan
+        // antreannya TTL 10 s.
+        if (
+          !this.seenSessions.has(message.from) &&
+          !this.pendingSignals.has(message.from) &&
+          this.pendingSignals.size >= PENDING_UNKNOWN_SENDER_MAX
+        ) {
+          this.emit('invalid-signal', {
+            reason:
+              `from-roster check: pesan dari ${message.from} di-drop — ` +
+              `pengirim tak dikenal (bukan roster presence / handshake / pending-dial)`,
+          });
+          return;
+        }
         this.queuePendingSignal(message);
         return;
       }
+      this.rememberSeenSession(message.from);
       // Audit 23-b M6: jalur self-heal ini TIDAK boleh melampaui kapasitas
       // mesh — addPeer MELEMPAR saat penuh dan exception dari handler
       // broadcast menyebar ke dispatcher realtime. Aturan deterministiknya
@@ -344,7 +475,13 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
       queue = [];
       this.pendingSignals.set(message.from, queue);
     }
-    if (queue.length >= PENDING_SIGNAL_MAX_PER_PEER) {
+    // From-roster check (25-c): pengirim tak dikenal dapat antrean jauh lebih
+    // ketat — race sah hanya butuh 1 offer + beberapa kandidat; penyerang
+    // bisa mengisi 50 slot dengan SDP 128 KiB per pesan.
+    const cap = this.seenSessions.has(message.from)
+      ? PENDING_SIGNAL_MAX_PER_PEER
+      : PENDING_SIGNAL_MAX_PER_UNKNOWN_SENDER;
+    if (queue.length >= cap) {
       queue.shift(); // terbatas — buang yang terlama
     }
     queue.push({ at: now, message });
@@ -366,6 +503,12 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
       return;
     }
     const sessions = this.readPresence();
+    // From-roster check (25-c): semua key presence sah dicatat sebagai
+    // "pernah terlihat" — sinyal dari mereka tetap dipercaya walau presence
+    // mereka sempat hilang (blip jaringan) saat sinyal masih di jalur.
+    for (const sessionId of sessions.keys()) {
+      this.rememberSeenSession(sessionId);
+    }
     const ids = [...sessions.keys()].sort();
     let allowed: Set<string> | null = null;
     if (ids.length > MAX_ROOM_SIZE) {
@@ -412,6 +555,9 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
     // sessionId lebih besar = polite (mengalah saat glare), kecil = inisiator.
     const polite = this.self.sessionId > session.sessionId;
     this.manager.addPeer(session, polite);
+    // Block-muting (25-c M4): peer baru dicek terhadap cache block-list —
+    // mencakup roster ADD maupun sinkronisasi pertama setelah join.
+    this.applyMuteForSession(session);
     const queued = this.pendingSignals.get(session.sessionId);
     this.pendingSignals.delete(session.sessionId);
     const peer = this.buildPeerState(session.sessionId);
@@ -424,6 +570,21 @@ export class MeshRoomController extends Emitter<MeshRoomEventMap> {
         this.manager.handleSignal(entry.message);
       }
     }
+  }
+
+  /** Mencatat sessionId terlihat di presence (from-roster check 25-c) — terbatas. */
+  private rememberSeenSession(sessionId: string): void {
+    if (this.seenSessions.has(sessionId)) {
+      return;
+    }
+    if (this.seenSessions.size >= SEEN_SESSIONS_MAX) {
+      // FIFO: Set JavaScript menjaga urutan penyisipan — hapus yang terlama.
+      const oldest = this.seenSessions.values().next().value;
+      if (oldest !== undefined) {
+        this.seenSessions.delete(oldest);
+      }
+    }
+    this.seenSessions.add(sessionId);
   }
 
   /** Membaca + memvalidasi presence state channel menjadi Map<sessionId, SessionInfo>. */

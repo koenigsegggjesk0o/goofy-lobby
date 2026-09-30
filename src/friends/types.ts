@@ -27,9 +27,23 @@ export const FRIENDSHIP_STATUS_ACCEPTED = 'accepted' as const;
  * Pesan exception trigger `friendships_block_guard` (0007, errcode P0001).
  * Dicocokkan sebagai SUBSTRING pesan error insert — daftar blokir tidak bisa
  * dibaca client (RLS blocks blocker-only), jadi pesan trigger ini adalah
- * satu-satunya sinyal bahwa permintaan ditolak karena penerima memblokir.
+ * satu-satunya sinyal bahwa permintaan ditolak karena blokir. Sejak 0019
+ * guard ini DUA ARAH (requester maupun addressee yang memblokir sama-sama
+ * menolak) — pesan tetap satu (arah tidak dibedakan demi privasi).
  */
 export const BLOCK_GUARD_MESSAGE = 'friend request rejected: blocked' as const;
+
+/**
+ * Pesan exception trigger rate-limit permintaan pertemanan (0019, P0001):
+ * > 10 request / jam per requester di sisi server (di luar kendali client).
+ */
+export const FRIENDSHIP_RATE_LIMIT_MESSAGE = 'RATE_LIMITED_FRIENDSHIP' as const;
+
+/**
+ * Pesan exception trigger guard transisi status friendships (0019, P0001):
+ * downgrade accepted → pending ditolak di lapisan data, apa pun perannya.
+ */
+export const FRIENDSHIP_TRANSITION_GUARD_MESSAGE = 'INVALID_FRIENDSHIP_TRANSITION' as const;
 
 /**
  * Proyeksi kolom profil untuk join ringkas pihak lawan. Daftar eksplisit
@@ -187,7 +201,9 @@ export type FriendsErrorCode =
   | 'self-block'
   | 'already-friends'
   | 'request-exists'
+  | 'rate-limited' // trigger 0019: >10 permintaan pertemanan/jam per requester (server)
   | 'blocked'
+  | 'invalid-transition' // trigger 0019: transisi status friendships tidak sah (accepted→pending)
   | 'not-found'
   | 'invalid-row'
   | 'db-error';

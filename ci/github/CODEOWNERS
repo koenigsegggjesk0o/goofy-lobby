@@ -1,0 +1,10 @@
+# Salinan kanonik — file .github/ tidak bisa di-commit (PAT tanpa scope
+# workflow; lihat header scripts/dev/restore-ci.mjs). File ini disinkronkan
+# ke .github/CODEOWNERS oleh script itu.
+#
+# Default owner: seluruh file di repo dimiliki handle pemilik repo (diambil
+# dari `git remote get-url origin`: koenigsegggjesk0o/goofy-lobby).
+# Efeknya nyata setelah branch protection main mengaktifkan "Require review
+# from Code Owners" — lihat docs/deploy-checklist.md seksi GitHub.
+
+* @koenigsegggjesk0o

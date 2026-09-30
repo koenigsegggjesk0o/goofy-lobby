@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "nextjs_tailwind_shadcn_ts",
+      "name": "goofy-lobby",
       "dependencies": {
         "@sentry/browser": "11.0.0",
         "@supabase/supabase-js": "2.117.2",

@@ -1,14 +1,24 @@
 /**
- * Verifikasi migrasi database 0001..0018 pada PostgreSQL ASLI in-process
+ * Verifikasi migrasi database 0001..0020 pada PostgreSQL ASLI in-process
  * (@electric-sql/pglite, build WASM) — mengubah status migrasi dari
  * "ditulis tapi tak pernah dijalankan" menjadi "terverifikasi eksekusi +
  * semantik keamanan lokal". File ini mengeksekusi seluruh
- * supabase/migrations/*.sql secara berurutan, LALU menguji perilaku
- * RLS / grant kolom / trigger guard secara empiris lewat role switching
- * (SET ROLE authenticated + klaim JWT di GUC sesi). Migrasi 0014/0015 =
- * remedi audit Task 19; 0016/0017 = P0-1 private channel (Task 22-c);
- * 0018 = remedi audit menyeluruh malam 29/30 Sep 2026 (Task 23) — tes
- * regresinya berlabel "audit 0018-*" di bawah.
+ * supabase/migrations/*.sql (scope 0001..0020, lihat catatan 0021) secara
+ * berurutan, LALU menguji perilaku RLS / grant kolom / trigger guard
+ * secara empiris lewat role switching (SET ROLE authenticated + klaim JWT
+ * di GUC sesi). Migrasi 0014/0015 = remedi audit Task 19; 0016/0017 = P0-1
+ * private channel (Task 22-c); 0018 = remedi audit menyeluruh malam 29/30
+ * Sep 2026 (Task 23); 0019/0020 = remedi audit Task 25 domain data layer
+ * (rate limit messages/friendship, join_room BLOCKED_FROM_ROOM, purge IP,
+ * transition guard, block dua arah + grant hygiene) — tes regresinya
+ * berlabel "audit 0019-*" / "audit 0020-*" di bawah.
+ *
+ * SCOPE 0001..0020 (bukan "semua file di direktori"): migrasi 0021+
+ * (Paddle) ditulis Agent LAIN secara PARALEL dan bisa muncul di
+ * supabase/migrations/ kapan pun selama sesi ini — suite ini TIDAK BOLEH
+ * bergantung pada keberadaan/validitas file milik agent lain. File dengan
+ * nomor > 0020 diabaikan lewat filter OWNED_MIGRATION_FILES; mengintegrasikan
+ * 0021+ ke harness ini menjadi tanggung jawab pemiliknya pasca-merge.
  *
  * BATAS KEJUJURAN:
  * - PGlite tidak membawa infrastruktur Supabase. Schema `auth` (tabel users
@@ -41,7 +51,10 @@
  * mahal), test berjalan berurutan dan beberapa test sengaja mewarisi state
  * test sebelumnya (dibolehkan permanen setelah selesai):
  * - a friendship A↔B pending → accepted → dihapus → dibuat ulang accepted;
- * - block B→A dibuat (test guard), dihapus (test messages), dibuat lagi.
+ * - block B→A dibuat (test guard), dihapus (test messages), dibuat lagi;
+ * - tes audit 0019/0020 menambah: Y↔Z accepted + 20 pesan Y (rate limit),
+ *   T→10 target pending (C di-accept), block Q→R (dipakai tes revoke
+ *   blocks), attempt backdated di-purge, join A ke room B sukses.
  * afterEach selalu me-reset role + klaim JWT agar tidak ada kebocoran konteks.
  */
 import { readFileSync, readdirSync } from 'node:fs';
@@ -78,13 +91,30 @@ const USER_U = '60606060-6060-6060-6060-606060606060';
 const USER_V = '70707070-7070-7070-7070-707070707070';
 const USER_W = '80808080-8080-8080-8080-808080808080';
 const USER_X = '90909090-9090-9090-9090-909090909090';
+/** User untuk tes regresi audit Task 25 (0019/0020, Task 26-c): rate limit pesan. */
+const USER_Y = 'b1b1b1b1-b1b1-b1b1-b1b1-b1b1b1b1b1b1';
+const USER_Z = 'c2c2c2c2-c2c2-c2c2-c2c2-c2c2c2c2c2c2';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../supabase/migrations', import.meta.url));
 
-/** File migrasi urut nama (zero-padded 0001..0017 → urut leksikografis = numerik). */
+/** File migrasi urut nama (zero-padded 0001..0020+ → urut leksikografis = numerik). */
 const MIGRATION_FILES = readdirSync(MIGRATIONS_DIR)
   .filter((f) => f.endsWith('.sql'))
   .sort();
+
+/**
+ * Batas atas nomor migrasi yang DI-APPLY + diuji file ini. 0021
+ * (paddle_events — Task 26-d) kini DIINTEGRASIKAN ke rantai oleh main
+ * (Task 26) setelah kedua agent paralel selesai; filter tetap dijaga agar
+ * migrasi > 0021 (ditulis agent paralel lain) diabaikan sejak baris pertama.
+ */
+const OWNED_MIGRATION_MAX = 21;
+
+/** Subset 0001..0021 dari MIGRATION_FILES — inilah rantai yang diverifikasi. */
+const OWNED_MIGRATION_FILES = MIGRATION_FILES.filter((f) => {
+  const num = Number.parseInt(f.slice(0, 4), 10);
+  return Number.isInteger(num) && num <= OWNED_MIGRATION_MAX;
+});
 
 /**
  * STUB infrastruktur Supabase — bagian yang TIDAK dibawa PGlite. Semantik
@@ -221,6 +251,13 @@ async function scalarInt(sql: string, params?: unknown[]): Promise<number> {
   return (await one<{ n: number }>(sql, params)).n;
 }
 
+/** has_table_privilege untuk matriks privilege (role client, tabel public). */
+function tablePriv(role: string, table: string, privilege: string): Promise<boolean> {
+  return one<{ p: boolean }>(
+    `select has_table_privilege('${role}', '${table}', '${privilege}') as p`,
+  ).then((row) => row.p);
+}
+
 /**
  * Asersi error Postgres yang DIHARAPKAN: SQLSTATE (+ potongan pesan opsional).
  * Memastikan kegagalan terjadi karena alasan yang benar — RLS vs constraint
@@ -252,10 +289,11 @@ beforeAll(async () => {
   // 1) Stub lingkungan Supabase (role, schema auth/storage, helper functions).
   await db.exec(SUPABASE_STUB_SQL);
 
-  // 2) Terapkan 0001..0015 BERURUTAN. Error apa pun → seluruh suite gagal
-  //    dengan nama file — memang begitu, kita justru berburu SQL rusak.
-  //    (Pass idempotensi sengaja bukan di sini — lihat test terakhir + header.)
-  for (const file of MIGRATION_FILES) {
+  // 2) Terapkan 0001..0020 (scope file ini) BERURUTAN. Error apa pun →
+  //    seluruh suite gagal dengan nama file — memang begitu, kita justru
+  //    berburu SQL rusak. (Pass idempotensi sengaja bukan di sini — lihat
+  //    test terakhir + header.)
+  for (const file of OWNED_MIGRATION_FILES) {
     try {
       await db.exec(readMigration(file));
     } catch (err) {
@@ -289,17 +327,21 @@ afterAll(async () => {
   await db.close();
 });
 
-describe('migrasi 0001..0018 pada PGlite (WASM Postgres)', () => {
+describe('migrasi 0001..0021 pada PGlite (WASM Postgres)', () => {
   it(
-    'membaca 18 file migrasi dan membentuk semua objek inti (tabel, kolom, policy, bucket)',
+    'membaca 21 file migrasi (0001..0021) dan membentuk semua objek inti (tabel, kolom, policy, bucket)',
     { timeout: 60_000 },
     async () => {
-      expect(MIGRATION_FILES).toHaveLength(18);
+      expect(OWNED_MIGRATION_FILES).toHaveLength(21);
       expect(MIGRATION_FILES[0]).toBe('0001_profiles.sql');
       expect(MIGRATION_FILES[13]).toBe('0014_rls_auto_enable_backfill.sql');
       expect(MIGRATION_FILES[14]).toBe('0015_profiles_insert_lockdown.sql');
       expect(MIGRATION_FILES[15]).toBe('0016_room_registry.sql');
       expect(MIGRATION_FILES[16]).toBe('0017_realtime_room_authorization.sql');
+      expect(OWNED_MIGRATION_FILES[17]).toBe('0018_audit_fixes.sql');
+      expect(OWNED_MIGRATION_FILES[18]).toBe('0019_rate_limits_and_room_guards.sql');
+      expect(OWNED_MIGRATION_FILES[19]).toBe('0020_grant_hygiene.sql');
+      expect(OWNED_MIGRATION_FILES[20]).toBe('0021_paddle_events.sql');
 
       const tables = await db.query<{ tablename: string }>(
         `select tablename from pg_tables
@@ -1261,17 +1303,16 @@ describe('migrasi 0001..0018 pada PGlite (WASM Postgres)', () => {
         ),
       ).toEqual({ requester: USER_V, status: 'accepted' });
 
-      // Analogi service_role (superuser) tetap bebas kolom penuh.
+      // Analogi service_role (superuser) tetap bebas menulis kolom status —
+      // guard transisi 0019 hanya menolak DOWNGRADE accepted→pending, bukan
+      // penulisan kolom status itu sendiri (nilai sama = bukan transisi;
+      // tes downgrade eksplisit ada di blok "audit 0019-c" di bawah).
       await asSuperuser();
       const su = await db.query(
         'update public.friendships set status = $1 where requester_id = $2 and addressee_id = $3',
-        ['pending', USER_V, USER_W],
-      );
-      expect(su.affectedRows).toBe(1);
-      await db.query(
-        'update public.friendships set status = $1 where requester_id = $2 and addressee_id = $3',
         ['accepted', USER_V, USER_W],
       );
+      expect(su.affectedRows).toBe(1);
     },
   );
 
@@ -1456,6 +1497,503 @@ describe('migrasi 0001..0018 pada PGlite (WASM Postgres)', () => {
     },
   );
 
+  // ================================================================
+  // Audit Task 25 — remedi 26-c: migrasi 0019 (rate limit + social
+  // guards) & 0020 (grant hygiene). Urutan SALING BERGANTUNG (state
+  // friendship/block dibawa antar-test) — jangan diacak.
+  // ================================================================
+
+  it(
+    'audit 0019-a (25-c HIGH-1 parsial/B3): rate limit pesan server-side — 20 pesan/10 detik, ke-21 DITOLAK',
+    { timeout: 60_000 },
+    async () => {
+      await seedUsers([USER_Y, USER_Z]);
+      await asUser(USER_Y);
+      await db.query(
+        'insert into public.friendships (requester_id, addressee_id) values ($1, $2)',
+        [USER_Y, USER_Z],
+      );
+      await asUser(USER_Z);
+      const accept = await db.query(
+        `update public.friendships set status = 'accepted'
+         where requester_id = $1 and addressee_id = $2`,
+        [USER_Y, USER_Z],
+      );
+      expect(accept.affectedRows).toBe(1);
+
+      // 20 pesan pertama dalam jendela 10 detik → semua sukses (jalur chat
+      // normal tidak tersentuh guard).
+      await asUser(USER_Y);
+      for (let i = 0; i < 20; i += 1) {
+        await db.query(
+          'insert into public.messages (sender_id, recipient_id, body) values ($1, $2, $3)',
+          [USER_Y, USER_Z, `pesan ${i}`],
+        );
+      }
+      expect(
+        await scalarInt('select count(*)::int as n from public.messages where sender_id = $1', [
+          USER_Y,
+        ]),
+      ).toBe(20);
+
+      // Insert ke-21 dalam jendela yang sama → trigger menolak (P0001).
+      await expectPgError(
+        () =>
+          db.query(
+            'insert into public.messages (sender_id, recipient_id, body) values ($1, $2, $3)',
+            [USER_Y, USER_Z, 'ke-21'],
+          ),
+        'P0001',
+        'RATE_LIMITED_MESSAGES',
+      );
+    },
+  );
+
+  it(
+    'audit 0019-b (25-c MEDIUM spam): rate limit friend request — 10/jam, ke-11 DITOLAK',
+    { timeout: 60_000 },
+    async () => {
+      await asUser(USER_T);
+      // 10 permintaan pertama ke target BERBEDA (index kanonik tidak
+      // tersentuh — semua pasangan unik; E tidak dipakai karena profilnya
+      // sudah dihapus test 0015).
+      const targets = [
+        USER_C,
+        USER_D,
+        USER_F,
+        USER_G,
+        USER_H,
+        USER_I,
+        USER_J,
+        USER_K,
+        USER_L,
+        USER_M,
+      ];
+      for (const target of targets) {
+        await db.query(
+          'insert into public.friendships (requester_id, addressee_id) values ($1, $2)',
+          [USER_T, target],
+        );
+      }
+      expect(
+        await scalarInt(
+          'select count(*)::int as n from public.friendships where requester_id = $1',
+          [USER_T],
+        ),
+      ).toBe(10);
+
+      // Permintaan ke-11 dalam 1 jam → trigger menolak (P0001).
+      await expectPgError(
+        () =>
+          db.query('insert into public.friendships (requester_id, addressee_id) values ($1, $2)', [
+            USER_T,
+            USER_N,
+          ]),
+        'P0001',
+        'RATE_LIMITED_FRIENDSHIP',
+      );
+    },
+  );
+
+  it(
+    'audit 0019-c (25-b LOW): downgrade accepted→pending DITOLAK (addressee & superuser); pending→accepted tetap boleh',
+    { timeout: 60_000 },
+    async () => {
+      // V↔W accepted (dari test audit 0018-1). W (addressee — satu-satunya
+      // penulis kolom status yang sah) mencoba menurunkan status → ditolak.
+      await asUser(USER_W);
+      await expectPgError(
+        () =>
+          db.query(
+            `update public.friendships set status = 'pending'
+             where requester_id = $1 and addressee_id = $2`,
+            [USER_V, USER_W],
+          ),
+        'P0001',
+        'INVALID_FRIENDSHIP_TRANSITION',
+      );
+
+      // Guard transisi role-agnostic: superuser (analogi service_role) juga
+      // tidak bisa downgrade diam-diam — perbaikan data harus delete+insert.
+      await asSuperuser();
+      await expectPgError(
+        () =>
+          db.query(
+            `update public.friendships set status = 'pending'
+             where requester_id = $1 and addressee_id = $2`,
+            [USER_V, USER_W],
+          ),
+        'P0001',
+        'INVALID_FRIENDSHIP_TRANSITION',
+      );
+
+      // Jalur sah tetap hidup: pending → accepted oleh addressee
+      // (T→C masih pending dari test 0019-b di atas).
+      await asUser(USER_C);
+      const accept = await db.query(
+        `update public.friendships set status = 'accepted'
+         where requester_id = $1 and addressee_id = $2`,
+        [USER_T, USER_C],
+      );
+      expect(accept.affectedRows).toBe(1);
+    },
+  );
+
+  it(
+    'audit 0019-d (25-b M4 sisi data): join_room DITOLAK BLOCKED_FROM_ROOM bila pemilik room memblokir caller; unblock → OK',
+    { timeout: 60_000 },
+    async () => {
+      // Room milik B; B memblokir A (on conflict do nothing — blok B→A
+      // mungkin masih ada dari test guard messages; test ini idempoten).
+      await asUser(USER_B);
+      const room = await one<{ code: string }>('select public.create_room() as code');
+      await db.query(
+        'insert into public.blocks (blocker_id, blocked_id) values ($1, $2) on conflict do nothing',
+        [USER_B, USER_A],
+      );
+
+      await asUser(USER_A);
+      await expectPgError(
+        () => db.query('select public.join_room($1)', [room.code]),
+        'P0001',
+        'BLOCKED_FROM_ROOM',
+      );
+
+      // Setelah unblock, join sukses — attempt tercatat (cek blokir sengaja
+      // ditempatkan SEBELUM pencatatan supaya kontrak akuntansi 0016 utuh)
+      // dan tiket diterbitkan.
+      await asUser(USER_B);
+      const unblock = await db.query(
+        'delete from public.blocks where blocker_id = $1 and blocked_id = $2',
+        [USER_B, USER_A],
+      );
+      expect(unblock.affectedRows).toBe(1);
+
+      await asUser(USER_A);
+      expect(
+        await one<{ join_room: string }>('select public.join_room($1) as join_room', [room.code]),
+      ).toEqual({ join_room: 'OK' });
+    },
+  );
+
+  it(
+    'audit 0019-e (23-c LOW-5): insert room_join_attempts MEM-PURGE baris IP berumur > 2 jam',
+    { timeout: 60_000 },
+    async () => {
+      await asSuperuser();
+      // Baris backdated 3 jam — insert-nya sendiri tidak mem-purge apa pun
+      // (trigger BEFORE INSERT berjalan sebelum baris ini masuk tabel).
+      await db.query(
+        `insert into public.room_join_attempts (user_id, code_attempted, ip, attempted_at)
+         values ($1, 'ZZZZZZ99', '203.0.113.77', now() - interval '3 hours')`,
+        [USER_U],
+      );
+      expect(
+        await scalarInt(
+          `select count(*)::int as n from public.room_join_attempts
+           where user_id = $1 and ip = '203.0.113.77'`,
+          [USER_U],
+        ),
+      ).toBe(1);
+
+      // Insert baru (attempted_at = now) → trigger mem-purge baris backdated;
+      // baris baru tetap hidup.
+      await db.query(
+        `insert into public.room_join_attempts (user_id, code_attempted, ip)
+         values ($1, 'ZZZZZZ99', '198.51.100.77')`,
+        [USER_U],
+      );
+      expect(
+        await scalarInt(
+          `select count(*)::int as n from public.room_join_attempts
+           where user_id = $1 and ip = '203.0.113.77'`,
+          [USER_U],
+        ),
+      ).toBe(0);
+      expect(
+        await scalarInt(
+          `select count(*)::int as n from public.room_join_attempts
+           where user_id = $1 and ip = '198.51.100.77'`,
+          [USER_U],
+        ),
+      ).toBe(1);
+    },
+  );
+
+  it(
+    'audit 0019-f (25-b INFO): guard blokir pertemanan DUA ARAH — requester yang memblokir addressee JUGA ditolak',
+    { timeout: 60_000 },
+    async () => {
+      // Arah lama (0007): addressee (R) memblokir requester (Q) → ditolak.
+      await asUser(USER_R);
+      await db.query('insert into public.blocks (blocker_id, blocked_id) values ($1, $2)', [
+        USER_R,
+        USER_Q,
+      ]);
+      await asUser(USER_Q);
+      await expectPgError(
+        () =>
+          db.query('insert into public.friendships (requester_id, addressee_id) values ($1, $2)', [
+            USER_Q,
+            USER_R,
+          ]),
+        'P0001',
+        'friend request rejected: blocked',
+      );
+
+      // Arah BARU (0019): setelah R unblock, Q (requester) memblokir R
+      // (addressee) — sebelum 0019 request ini DITERIMA (bocor INFO 25-b).
+      await asUser(USER_R);
+      await db.query('delete from public.blocks where blocker_id = $1 and blocked_id = $2', [
+        USER_R,
+        USER_Q,
+      ]);
+      await asUser(USER_Q);
+      await db.query('insert into public.blocks (blocker_id, blocked_id) values ($1, $2)', [
+        USER_Q,
+        USER_R,
+      ]);
+      await expectPgError(
+        () =>
+          db.query('insert into public.friendships (requester_id, addressee_id) values ($1, $2)', [
+            USER_Q,
+            USER_R,
+          ]),
+        'P0001',
+        'friend request rejected: blocked',
+      );
+
+      // Kedua penolakan tidak meninggalkan baris friendship Q↔R.
+      await asSuperuser();
+      expect(
+        await scalarInt(
+          `select count(*)::int as n from public.friendships
+           where (requester_id = $1 and addressee_id = $2)
+              or (requester_id = $2 and addressee_id = $1)`,
+          [USER_Q, USER_R],
+        ),
+      ).toBe(0);
+    },
+  );
+
+  it(
+    'audit 0020-a: messages grant hygiene — INSERT+SELECT authenticated tetap jalan; UPDATE/DELETE permission denied',
+    { timeout: 60_000 },
+    async () => {
+      // Jalur chat tak rusak: Z (authenticated, teman accepted Y) masih bisa
+      // INSERT + SELECT. Z belum pernah mengirim pesan — jauh dari jendela
+      // rate limit 0019-a.
+      await asUser(USER_Z);
+      const sent = await db.query(
+        'insert into public.messages (sender_id, recipient_id, body) values ($1, $2, $3)',
+        [USER_Z, USER_Y, 'masih bisa kirim setelah 0020'],
+      );
+      expect(sent.affectedRows).toBe(1);
+      expect(
+        await scalarInt('select count(*)::int as n from public.messages where sender_id = $1', [
+          USER_Z,
+        ]),
+      ).toBe(1);
+
+      // UPDATE dan DELETE kini ditolak di lapisan PRIVILEGE (42501, sebelum
+      // RLS sempat dievaluasi) — pesan immutable dimatri, bukan cuma
+      // "dinetralkan absensi policy".
+      await expectPgError(
+        () => db.query('update public.messages set body = $1 where sender_id = $2', ['x', USER_Z]),
+        '42501',
+        'permission denied',
+      );
+      await expectPgError(
+        () => db.query('delete from public.messages where sender_id = $1', [USER_Z]),
+        '42501',
+        'permission denied',
+      );
+
+      // Matriks privilege dari sisi superuser.
+      await asSuperuser();
+      expect(await tablePriv('authenticated', 'public.messages', 'insert')).toBe(true);
+      expect(await tablePriv('authenticated', 'public.messages', 'select')).toBe(true);
+      expect(await tablePriv('authenticated', 'public.messages', 'update')).toBe(false);
+      expect(await tablePriv('authenticated', 'public.messages', 'delete')).toBe(false);
+      expect(await tablePriv('anon', 'public.messages', 'update')).toBe(false);
+      expect(await tablePriv('anon', 'public.messages', 'delete')).toBe(false);
+    },
+  );
+
+  it(
+    'audit 0020-b: blocks grant hygiene — unblock (DELETE own) tetap jalan; UPDATE permission denied',
+    { timeout: 60_000 },
+    async () => {
+      // Q→R block dibuat test 0019-f — jalur unblock (DELETE baris milik
+      // sendiri, policy blocks_delete_blocker 0008) TIDAK tersentuh revoke.
+      await asUser(USER_Q);
+      const unblock = await db.query(
+        'delete from public.blocks where blocker_id = $1 and blocked_id = $2',
+        [USER_Q, USER_R],
+      );
+      expect(unblock.affectedRows).toBe(1);
+
+      // UPDATE blocks kini ditolak di lapisan privilege.
+      await expectPgError(
+        () =>
+          db.query('update public.blocks set created_at = now() where blocker_id = $1', [USER_Q]),
+        '42501',
+        'permission denied',
+      );
+
+      await asSuperuser();
+      expect(await tablePriv('authenticated', 'public.blocks', 'delete')).toBe(true);
+      expect(await tablePriv('authenticated', 'public.blocks', 'update')).toBe(false);
+      expect(await tablePriv('anon', 'public.blocks', 'update')).toBe(false);
+    },
+  );
+
+  it(
+    'audit 0020-c: anon TIDAK bisa DELETE profiles (grant sisa 0005 dicabut); authenticated tetap bisa (lifecycle)',
+    { timeout: 60_000 },
+    async () => {
+      await db.exec('reset role;');
+      await db.exec('reset request.jwt.claims;');
+      await db.exec('set role anon;');
+      await expectPgError(
+        () => db.query('delete from public.profiles where id = $1', [USER_D]),
+        '42501',
+        'permission denied',
+      );
+
+      // Matriks: anon DELETE = false; authenticated DELETE = true
+      // (policy profiles_delete_own — by design lifecycle akun, 0015:26-28).
+      await asSuperuser();
+      expect(await tablePriv('anon', 'public.profiles', 'delete')).toBe(false);
+      expect(await tablePriv('authenticated', 'public.profiles', 'delete')).toBe(true);
+    },
+  );
+
+  it(
+    'audit 0020-d: sequence room_join_attempts_id_seq dicabut dari role client; jalur RPC tetap utuh',
+    { timeout: 60_000 },
+    async () => {
+      await asUser(USER_B);
+      await expectPgError(
+        () => db.query(`select nextval('public.room_join_attempts_id_seq')`),
+        '42501',
+        'permission denied',
+      );
+
+      await asSuperuser();
+      expect(
+        await one<{ p: boolean }>(
+          `select has_sequence_privilege('authenticated', 'public.room_join_attempts_id_seq', 'usage') as p`,
+        ),
+      ).toEqual({ p: false });
+      expect(
+        await one<{ p: boolean }>(
+          `select has_sequence_privilege('anon', 'public.room_join_attempts_id_seq', 'usage') as p`,
+        ),
+      ).toEqual({ p: false });
+
+      // Jalur sah tidak lewat sequence klien: join_room (SECURITY DEFINER,
+      // berjalan sebagai owner) masih mencatat attempt — dibuktikan empiris
+      // oleh test 0019-d di atas (join A sukses SETELAH 0020 ter-apply,
+      // karena seluruh migrasi dijalankan di beforeAll).
+    },
+  );
+
+  it('audit 0021: paddle_events + paddle_transactions — RLS aktif TANPA policy, role klien tertolak total, constraint status + FK cascade utuh', async () => {
+    await asSuperuser();
+
+    // (a) Kedua tabel ada dengan kolom inti lengkap.
+    const cols = await db.query<{ table_name: string; column_name: string }>(
+      `select table_name, column_name from information_schema.columns
+         where table_schema = 'public'
+           and table_name in ('paddle_events', 'paddle_transactions')
+         order by table_name, column_name`,
+    );
+    const colset = new Set(cols.rows.map((r) => `${r.table_name}.${r.column_name}`));
+    for (const want of [
+      'paddle_events.event_id',
+      'paddle_events.event_type',
+      'paddle_events.processed_at',
+      'paddle_transactions.transaction_id',
+      'paddle_transactions.user_id',
+      'paddle_transactions.price_id',
+      'paddle_transactions.amount_total',
+      'paddle_transactions.currency',
+      'paddle_transactions.status',
+      'paddle_transactions.refunded_at',
+    ]) {
+      expect(colset.has(want), `kolom hilang: ${want}`).toBe(true);
+    }
+
+    // (b) RLS aktif untuk keduanya.
+    for (const table of ['paddle_events', 'paddle_transactions']) {
+      const probe = await one<{ relrowsecurity: boolean }>(
+        `select c.relrowsecurity from pg_class c
+           join pg_namespace n on n.oid = c.relnamespace
+           where n.nspname = 'public' and c.relname = '${table}'`,
+      );
+      expect(probe.relrowsecurity, `${table} harus RLS aktif`).toBe(true);
+    }
+
+    // (c) TANPA policy apa pun (deny-all utk role klien).
+    const policies = await one<{ n: number }>(
+      `select count(*)::int as n from pg_policies
+         where schemaname = 'public'
+           and tablename in ('paddle_events', 'paddle_transactions')`,
+    );
+    expect(policies.n).toBe(0);
+
+    // (d) REVOKE total dari anon + authenticated (matriks privilege).
+    for (const role of ['anon', 'authenticated']) {
+      for (const table of ['paddle_events', 'paddle_transactions']) {
+        for (const priv of ['select', 'insert', 'update', 'delete']) {
+          const probe = await one<{ p: boolean }>(
+            `select has_table_privilege('${role}', 'public.${table}', '${priv}') as p`,
+          );
+          expect(probe.p, `${role} tidak boleh ${priv} ${table}`).toBe(false);
+        }
+      }
+    }
+
+    // (e) Constraint status hanya menerima completed|price_rejected.
+    await db.exec(`
+        insert into public.profiles (id, display_name)
+        values ('${USER_A}', 'audit0021-a') on conflict (id) do nothing;
+      `);
+    let rejected = false;
+    try {
+      await db.exec(`
+          insert into public.paddle_transactions
+            (transaction_id, user_id, price_id, status)
+          values ('txn-bad', '${USER_A}', 'pri_bad', 'hacked');
+        `);
+    } catch {
+      rejected = true;
+    }
+    expect(rejected, 'status di luar enum harus ditolak CHECK').toBe(true);
+
+    // (f) Insert sah + dedup on-conflict (pola router webhook).
+    await db.exec(`
+        insert into public.paddle_events (event_id, event_type) values ('evt-0021', 'transaction.completed');
+        insert into public.paddle_events (event_id, event_type) values ('evt-0021', 'transaction.completed')
+          on conflict (event_id) do nothing;
+        insert into public.paddle_transactions (transaction_id, user_id, price_id, amount_total, currency)
+          values ('txn-0021', '${USER_A}', 'pri_ok', 3900, 'USD');
+      `);
+    const evtCount = await one<{ n: number }>(
+      `select count(*)::int as n from public.paddle_events where event_id = 'evt-0021'`,
+    );
+    expect(evtCount.n).toBe(1);
+
+    // (g) FK cascade: hapus profile → baris transaksi ikut hilang
+    // (jaring pengaman erasure — lihat komentar 0021).
+    await db.exec(`delete from public.profiles where id = '${USER_A}';`);
+    const txnCount = await one<{ n: number }>(
+      `select count(*)::int as n from public.paddle_transactions where transaction_id = 'txn-0021'`,
+    );
+    expect(txnCount.n).toBe(0);
+  });
+
   it(
     'idempotensi: SELURUH file migrasi dapat dijalankan ulang tanpa error',
     { timeout: 120_000 },
@@ -1472,7 +2010,7 @@ describe('migrasi 0001..0018 pada PGlite (WASM Postgres)', () => {
       //     on storage.objects;
       // sebelum `create policy` — pola yang sudah dipakai 0002/0004/0008/0010/0013.
       await asSuperuser();
-      for (const file of MIGRATION_FILES) {
+      for (const file of OWNED_MIGRATION_FILES) {
         try {
           await db.exec(readMigration(file));
         } catch (err) {

@@ -1,6 +1,9 @@
 import {
   MAX_VOICE_SNIPPET_BYTES,
+  MAX_VOICE_SNIPPET_FILES,
+  MAX_VOICE_SNIPPET_TOTAL_BYTES,
   SIGNED_URL_DEFAULT_EXPIRY_S,
+  STORAGE_LIST_PAGE_SIZE,
   VOICE_BUCKET_NAME,
   VOICE_UPLOAD_MIME,
   VoiceSnippetError,
@@ -56,7 +59,15 @@ export class VoiceSnippetService {
   /**
    * Mengunggah hasil perekaman sebagai snippet baru milik `userId`.
    * Validasi lokal: userId terisi, blob tidak kosong, ≤ 25 MiB, MIME
-   * berawalan `audio/webm`. Mengembalikan path + fullPath objek.
+   * berawalan `audio/webm`; KUOTA per-user (audit 25 M1): jumlah file &
+   * total byte folder `${userId}/` di bawah batas. Mengembalikan path +
+   * fullPath objek.
+   *
+   * Residual yang DITERIMA (terdokumentasi): TOCTOU — dua upload bersamaan
+   * dari tab/akun yang sama bisa lolos pengecekan kuota bersama-sama
+   * (overshoot kecil, dibatasi cap 25 MiB/file). Penegakan kuota
+   * server-side sejati membutuhkan mediasi Edge Function (hitung ulang di
+   * sisi service_role sebelum menulis) — dicatat sebagai utang Fase 3.
    */
   async uploadSnippet(userId: string, blob: Blob): Promise<UploadedSnippet> {
     if (userId === '') {
@@ -73,6 +84,25 @@ export class VoiceSnippetService {
     }
     if (!blob.type.startsWith('audio/webm')) {
       throw new VoiceSnippetError('wrong-mime', `MIME blob "${blob.type}" bukan audio/webm`);
+    }
+    // Kuota per-user (audit 25 M1) — dihitung SEBELUM upload, dari
+    // metadata.size seluruh folder milik sendiri (paginated: storage list
+    // max 100 objek per panggilan).
+    const usage = await this.#currentUsage(userId);
+    if (usage.files >= MAX_VOICE_SNIPPET_FILES) {
+      throw new VoiceSnippetError(
+        'quota_exceeded',
+        `kuota snippet penuh: maksimum ${MAX_VOICE_SNIPPET_FILES} file per akun — ` +
+          `hapus snippet lama terlebih dulu`,
+      );
+    }
+    if (usage.bytes + blob.size > MAX_VOICE_SNIPPET_TOTAL_BYTES) {
+      throw new VoiceSnippetError(
+        'quota_exceeded',
+        `kuota penyimpanan snippet penuh: total terpakai ${usage.bytes} byte + unggahan ` +
+          `${blob.size} byte melebihi batas ${MAX_VOICE_SNIPPET_TOTAL_BYTES} byte — ` +
+          `hapus snippet lama terlebih dulu`,
+      );
     }
     const snippetId = `snippet-${this.#now().toString(36)}-${this.#randomId()}`;
     const path = makeSnippetPath(userId, snippetId);
@@ -139,7 +169,7 @@ export class VoiceSnippetService {
     if (userId === '') {
       throw new VoiceSnippetError('not-signed-in', 'userId kosong — belum signin?');
     }
-    const response = await this.#bucket().list(userId);
+    const response = await this.#bucket().list(`${userId}/`);
     if (response.error !== null) {
       throw new VoiceSnippetError(
         'storage-error',
@@ -148,6 +178,40 @@ export class VoiceSnippetService {
       );
     }
     return response.data.map((entry) => entry.name);
+  }
+
+  /**
+   * Menghitung pemakaian folder `${userId}/` (jumlah file + total byte)
+   * dengan memaginasi storage list — API Supabase mengembalikan maksimum
+   * STORAGE_LIST_PAGE_SIZE objek per panggilan, jadi loop offset sampai
+   * halaman pendek. Entri tanpa metadata (folder) tidak dihitung.
+   */
+  async #currentUsage(userId: string): Promise<{ files: number; bytes: number }> {
+    const prefix = `${userId}/`;
+    let offset = 0;
+    let files = 0;
+    let bytes = 0;
+    for (;;) {
+      const response = await this.#bucket().list(prefix, {
+        limit: STORAGE_LIST_PAGE_SIZE,
+        offset,
+      });
+      if (response.error !== null) {
+        throw new VoiceSnippetError(
+          'storage-error',
+          `list snippet gagal: ${response.error.message}`,
+          response.error,
+        );
+      }
+      files += response.data.length;
+      for (const entry of response.data) {
+        bytes += entry.metadata?.size ?? 0;
+      }
+      if (response.data.length < STORAGE_LIST_PAGE_SIZE) {
+        return { files, bytes };
+      }
+      offset += response.data.length;
+    }
   }
 }
 

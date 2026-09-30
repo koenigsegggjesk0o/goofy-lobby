@@ -440,15 +440,20 @@ class FakeInsertChain extends FakeChainBase<unknown> implements FriendsInsertCha
   }
 
   /**
-   * Meniru DB asli (0007) pada insert friendships — URUTAN PostgreSQL:
-   * BEFORE trigger dulu, baru constraint/index.
+   * Meniru DB asli (0007; guard dua arah sejak 0019) pada insert
+   * friendships — URUTAN PostgreSQL: BEFORE trigger dulu, baru
+   * constraint/index.
    */
   #executeFriendshipsInsert(): FriendsResponseLike<unknown> {
     const requester = fieldString(this.values, 'requester_id');
     const addressee = fieldString(this.values, 'addressee_id');
-    // (1) trigger friendships_block_guard: penerima telah memblokir pengirim.
+    // (1) trigger friendships_block_guard (DUA ARAH sejak 0019): block di
+    //     salah satu arah — penerima memblokir pengirim ATAU pengirim
+    //     memblokir penerima — sama-sama menolak permintaan.
     const blocked = this.client.blocks.some(
-      (row) => row.blocker_id === addressee && row.blocked_id === requester,
+      (row) =>
+        (row.blocker_id === addressee && row.blocked_id === requester) ||
+        (row.blocker_id === requester && row.blocked_id === addressee),
     );
     if (blocked) {
       return { data: null, error: { message: BLOCK_GUARD_MESSAGE, code: 'P0001' } };

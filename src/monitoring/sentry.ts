@@ -85,8 +85,10 @@ export function __setSdkForTests(sdk: SentrySdkLike): () => void {
  *   semua helper tetap aman dipanggil.
  * - Sudah ter-init → dilewati (idempoten), alasan dilaporkan.
  * - Hanya error monitoring: tracesSampleRate 0, tanpa replay/feedback.
- * - beforeSend mengupas properti sensitif (token/query URL) — pertahanan
- *   sederhana supaya kredensial tidak pernah sampai dashboard.
+ * - beforeSend mengupas properti sensitif secara rekursif-dalam (remediasi
+ *   25-a: extra, contexts, breadcrumbs[].data — kunci sensitif, userinfo
+ *   URL, query param sensitif, string panjang) supaya kredensial tidak
+ *   pernah sampai dashboard.
  */
 export function initMonitoring(
   dsn: string | undefined,
@@ -195,29 +197,131 @@ export function monitoringStatus(): { initialized: boolean; enabled: boolean } {
 // ============================================================
 
 /**
- * Menghapus kemungkinan kredensial dari event sebelum dikirim:
- * URL dengan query string dipangkas ke origin+path, kunci extra yang
- * menyerupai token dibersihkan.
+ * Menghapus kemungkinan kredensial dari event sebelum dikirim (remediasi
+ * audit 23-c LOW-7 + 25-a): URL request dipangkas query-nya, lalu walker
+ * rekursif-dalam menyikat `extra`, `contexts`, dan `breadcrumbs[i].data` —
+ * kunci sensitif diganti '[difilter]', nilai string dibersihkan (userinfo
+ * URL, query param sensitif, pemotongan > 2048 char).
  */
 function scrubSentryEvent(event: Record<string, unknown>): Record<string, unknown> {
   const scrubbed: Record<string, unknown> = { ...event };
   const request = scrubbed.request as { url?: string } | undefined;
-  if (typeof request?.url === 'string' && request.url.includes('?')) {
-    scrubbed.request = { ...request, url: request.url.split('?')[0] };
+  if (typeof request?.url === 'string') {
+    // Perilaku lama tetap: query string dibuang seluruhnya (origin+path);
+    // tambahan: userinfo user:pass@ ikut diredaksi bila ada.
+    const queryIndex = request.url.indexOf('?');
+    const noQuery = queryIndex === -1 ? request.url : request.url.slice(0, queryIndex);
+    const safeUrl = redactUrlUserinfo(noQuery);
+    if (safeUrl !== request.url) {
+      scrubbed.request = { ...request, url: safeUrl };
+    }
   }
-  const extra = scrubbed.extra as Record<string, unknown> | undefined;
-  if (extra !== undefined && extra !== null) {
-    scrubbed.extra = scrubRecord(extra);
+  const extra = scrubbed.extra;
+  if (extra !== null && typeof extra === 'object') {
+    scrubbed.extra = scrubDeep(extra, new Set());
+  }
+  const contexts = scrubbed.contexts;
+  if (contexts !== null && typeof contexts === 'object') {
+    scrubbed.contexts = scrubDeep(contexts, new Set());
+  }
+  if (Array.isArray(scrubbed.breadcrumbs)) {
+    scrubbed.breadcrumbs = (scrubbed.breadcrumbs as unknown[]).map(scrubBreadcrumb);
   }
   return scrubbed;
 }
 
-const SENSITIVE_KEY_PATTERN = /token|secret|password|authorization|apikey|api_key/i;
+/** Batas kedalaman walker (objek/array) — pertahanan atas payload ekstrem. */
+const SCRUB_MAX_DEPTH = 6;
 
-function scrubRecord(record: Record<string, unknown>): Record<string, unknown> {
+/** Batas panjang nilai string sebelum dipotong + sufiks (dicek SETELAH redaksi). */
+const SCRUB_MAX_STRING_LENGTH = 2048;
+const TRUNCATED_SUFFIX = '…[truncated]';
+
+const SENSITIVE_KEY_PATTERN =
+  /(token|secret|password|passwd|authorization|apikey|api_key|credential|session|jwt|private)/i;
+
+/** userinfo URL (`scheme://user:pass@`) → `scheme://***:***@`. */
+const URL_USERINFO_PATTERN = /(\/\/)[^/@:\s]+:[^/@:\s]+@/g;
+
+/** Pasangan `key=value` di query string (sampai `&`/`#`/akhir). */
+const URL_QUERY_PARAM_PATTERN = /([?&])([^=&#]+)=([^&#]*)/g;
+
+function isSensitiveKey(key: string): boolean {
+  if (SENSITIVE_KEY_PATTERN.test(key)) {
+    return true;
+  }
+  // Kunci query bisa percent-encoded (mis. api%5Fkey) — cek bentuk terurai.
+  try {
+    return SENSITIVE_KEY_PATTERN.test(decodeURIComponent(key));
+  } catch {
+    return false;
+  }
+}
+
+function redactUrlUserinfo(value: string): string {
+  return value.replace(URL_USERINFO_PATTERN, '$1***:***@');
+}
+
+/** Bersihkan satu nilai string: userinfo URL, query param sensitif, panjang. */
+function scrubString(value: string): string {
+  const noUserinfo = redactUrlUserinfo(value);
+  const noSensitiveQuery = noUserinfo.replace(
+    URL_QUERY_PARAM_PATTERN,
+    (match, sep: string, key: string) => (isSensitiveKey(key) ? `${sep}${key}=[difilter]` : match),
+  );
+  if (noSensitiveQuery.length > SCRUB_MAX_STRING_LENGTH) {
+    return noSensitiveQuery.slice(0, SCRUB_MAX_STRING_LENGTH) + TRUNCATED_SUFFIX;
+  }
+  return noSensitiveQuery;
+}
+
+/** Objek polos (bukan Date/Error/Map/dst.) — hanya ini yang di descend. */
+function isPlainObject(value: object): boolean {
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Walker rekursif-dalam: cycle-safe via Set (rujukan bersama/berulang →
+ * '[circular]'), depth cap SCRUB_MAX_DEPTH. Nilai non-plain-object
+ * (Date/Error/dll.) diteruskan apa adanya — tidak pernah di-stringify
+ * sehingga tidak membocorkan lebih dari kondisi sebelumnya.
+ */
+function scrubDeep(value: unknown, seen: Set<object>, depth: number = 0): unknown {
+  if (typeof value === 'string') {
+    return scrubString(value);
+  }
+  if (value === null || typeof value !== 'object') {
+    return value;
+  }
+  if (depth >= SCRUB_MAX_DEPTH) {
+    return value;
+  }
+  if (seen.has(value)) {
+    return '[circular]';
+  }
+  if (!isPlainObject(value) && !Array.isArray(value)) {
+    return value;
+  }
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.map((item) => scrubDeep(item, seen, depth + 1));
+  }
   const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(record)) {
-    result[key] = SENSITIVE_KEY_PATTERN.test(key) ? '[difilter]' : value;
+  for (const [key, item] of Object.entries(value)) {
+    result[key] = isSensitiveKey(key) ? '[difilter]' : scrubDeep(item, seen, depth + 1);
   }
   return result;
+}
+
+/** Satu breadcrumb: hanya field `data` yang disikat (objek ataupun array). */
+function scrubBreadcrumb(crumb: unknown): unknown {
+  if (crumb === null || typeof crumb !== 'object') {
+    return crumb;
+  }
+  const record = crumb as { data?: unknown };
+  if (record.data === null || typeof record.data !== 'object') {
+    return crumb;
+  }
+  return { ...record, data: scrubDeep(record.data, new Set()) };
 }
