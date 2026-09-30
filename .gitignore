@@ -6,9 +6,13 @@ dist/
 coverage/
 
 # env & rahasia — JANGAN pernah commit (kecuali contoh)
+# .env.production DIIZINKAN: hanya nilai publik by-design (URL + anon key
+# + URL TURN) supaya deploy Vercel jalan tanpa konfigurasi — rahasia tetap
+# dilarang hard-absolute di sana.
 .env
 .env.*
 !.env.example
+!.env.production
 
 # logs
 *.log

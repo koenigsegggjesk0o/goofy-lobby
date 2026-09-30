@@ -1472,3 +1472,22 @@ Work Log:
 
 Stage Summary:
 - BLOKER PUSH SELESAI: GitHub kini sinkron dengan lokal (c233535). Langkah tersisa milik user di Vercel: (1) Settings → Environment Variables isi 3 nilai publik, (2) Redeploy (env dibaca saat build), (3) Settings → Deployment Protection → matikan Vercel Authentication bila ingin publik. Alternatif: user minta agent push lagi kapan pun dengan PAT aktif.
+
+---
+Task ID: 36
+Agent: main (Z.ai Code)
+Task: Zero-config deploy Vercel — user masih melihat layar "Belum terkonfigurasi" di goofy-lobby.vercel.app (env belum diisi di dashboard) dan bertanya beda dua key Supabase yang ia temukan (anon vs service_role). Solusi: nilai publik klien di-commit ke repo supaya deploy jalan tanpa sentuh dashboard sama sekali.
+
+Work Log:
+- Jawab pertanyaan user: key pertama (anon, suffix Tv6_n...) = publik, untuk VITE_SUPABASE_ANON_KEY; key kedua (service_role, suffix aCe6fx...) = RAHASIA admin bypass-RLS — dilarang masuk Vercel/repo/bundle. Token service_role yang user paste di chat tetap protokol inline-only (tidak ditulis ke disk mana pun oleh agent).
+- Forensik deployment: curl goofy-lobby.vercel.app → index.html BARU (title "goofy — obrolan suara spasial", bundle main-BL81fE6W.js) — kode Task 32/33 SUDAH live; bundle digrep: 0x llaeglakcheqxlbwvheo (env tidak ke-bake) + 0x aCe6fx (tidak ada kebocoran service_role — user belum sempat salah paste ke Vercel).
+- .env.production BARU di-commit: 3 nilai publik (VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY anon, VITE_TURN_EPHEMERAL_URL) + header komentar menjelaskan kenapa aman (client-side by-design, RLS yang menjaga data) + larangan absolut rahasia di file itu. .gitignore: tambah exception !.env.production (pola .env.* tetap meng-ignore .env.local dll).
+- Verifikasi build: bun run build → dist/assets/main-*.js digrep: URL 2x, anon key 2x, TURN URL 2x, service_role 0x, sbp_ 0x — nilai publik ke-bake penuh, nol rahasia. Hash bundle identik dengan build lokal .env lama (konten sama → deterministic).
+- Docs: README seksi Vercel → langkah 3 jadi "tanpa konfigurasi apa pun" + peringatan service_role; deploy-checklist j → env dashboard kini OPSIONAL (override), catatan zero-config + larangan service_role.
+- Gerbang: eslint ✓ typecheck ✓ vitest 845/845 (51 file) ✓.
+- Commit + push via PAT user (inline). Vercel auto-deploy dari push. Verifikasi pasca-build: poll production URL → bundle baru wajib mengandung llaeglakcheqxlbwvheo dan bebas aCe6fx.
+
+Stage Summary:
+- Deploy Vercel kini ZERO-CONFIG: push = jalan. Akar keluhan berulang user ("masih halaman lama" → "layar belum terkonfigurasi") tertutup rantai penuh: kode baru live + nilai publik ikut repo + layar setup berpandu bila env benar-benar kosong.
+- Batas keamanan dipertahankan: hanya nilai public-by-design di repo; service_role/token admin tetap chat-inline only; verifikasi bundle nol kebocoran.
+- Sisa opsional user: VITE_SENTRY_DSN (dashboard override), matikan Vercel Authentication bila ingin publik, revoke PAT setelah hijau.

@@ -22,13 +22,17 @@ MVP web app sosial berbasis **voice chat dengan spatial audio real-time**
    (Halaman teks polos "Fase 1 SELESAI …" di deploy = tanda kode lama.)
 2. Import repo ke Vercel (preset **Vite** terdeteksi otomatis;
    `vercel.json` mengurus rewrite SPA + header keamanan + build).
-3. Settings → Environment Variables:
-   `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`,
-   `VITE_TURN_EPHEMERAL_URL` (nilai publik by-design — lihat
-   [`docs/deploy-checklist.md`](docs/deploy-checklist.md) bagian j), lalu
-   **Redeploy** (env `VITE_*` dibaca saat build).
+3. Selesai — **tanpa konfigurasi apa pun**: nilai publik klien ikut repo
+   lewat `.env.production` (aman by-design; penjelasan di header file itu).
+   Env var di dashboard Vercel sifatnya opsional (meng-override),
+   mis. `VITE_SENTRY_DSN`.
 
-Tanpa env, aplikasi menampilkan layar setup berpandu (bukan white screen).
+⚠️ **Jangan pernah** menaruh `service_role` key Supabase (kunci admin)
+ke env var Vercel / file mana pun di repo — itu bypass semua RLS dan
+akan tercetak di bundle publik. Yang publik hanya anon key.
+
+Tanpa env sama sekali pun, aplikasi menampilkan layar setup berpandu
+(bukan white screen).
 
 ## Setup lokal
 

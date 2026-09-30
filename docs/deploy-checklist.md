@@ -323,16 +323,16 @@ otomatis dari repo.
 1. Push commit terbaru (lihat blok PENTING di atas), lalu import repo
    GitHub ke Vercel (framework preset: **Vite**; vercel.json mengurus
    sisanya).
-2. Settings → Environment Variables (semua publik by-design):
-   - `VITE_SUPABASE_URL` = `https://llaeglakcheqxlbwvheo.supabase.co`
-   - `VITE_SUPABASE_ANON_KEY` = anon key (dashboard → Settings → API)
-   - `VITE_TURN_EPHEMERAL_URL` =
-     `https://llaeglakcheqxlbwvheo.supabase.co/functions/v1/turn-credentials`
-   - (opsional) `VITE_SENTRY_DSN`
-3. Deploy. CATATAN: nilai `VITE_*` dibaca SAAT BUILD — kalau variabel
-   ditambahkan SETELAH deploy pertama, wajib **Redeploy**. Tanpa env,
-   aplikasi menampilkan layar setup berpandu langkah-demi-langkah (bukan
-   white screen) dengan tombol salin nama variabel.
+2. Env var dashboard TIDAK WAJIB lagi (Task 36): nilai publik klien
+   kini ikut repo lewat `.env.production` (VITE_SUPABASE_URL,
+   VITE_SUPABASE_ANON_KEY, VITE_TURN_EPHEMERAL_URL — aman by-design,
+   header file menjelaskan alasannya) sehingga deploy jalan zero-config.
+   Env var dashboard berfungsi sebagai OVERRIDE (mis. `VITE_SENTRY_DSN`
+   opsional); ingat nilai `VITE_*` dibaca SAAT BUILD — setelah menambah
+   variabel wajib **Redeploy**. Tanpa env sama sekali pun aplikasi
+   menampilkan layar setup berpandu (bukan white screen).
+   ⚠️ JANGAN pernah menaruh `service_role` key (kunci admin Supabase)
+   di env var Vercel — itu bypass RLS dan tercetak di bundle publik.
 4. Supabase dashboard → Authentication → URL Configuration: tambahkan
    domain Vercel ke **Site URL** + **Redirect URLs**.
 
